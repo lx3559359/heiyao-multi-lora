@@ -1,0 +1,12 @@
+tests/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+data/triggers.json
+data/heiyao_device.json
+*.safetensors
+*.part
+
+
+.github/

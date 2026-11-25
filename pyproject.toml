@@ -1,0 +1,14 @@
+[project]
+name = "heiyao-multi-lora"
+version = "1.0.0"
+description = "由黑曜资源提供的多 LoRA 加载器，支持自定义槽位、完整触发词和官网版本导入。"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/lx3559359/heiyao-multi-lora"
+Homepage = "https://openheiyao.top/"
+
+[tool.comfy]
+PublisherId = "heiyao-resources"
+DisplayName = "黑曜资源 · 个人多 LoRA 加载器"

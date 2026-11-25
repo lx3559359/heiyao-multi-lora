@@ -1,0 +1,387 @@
+"""Read the Heiyao catalog and import checksum-pinned website LoRAs."""
+import asyncio
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import re
+from secrets import token_urlsafe
+from tempfile import NamedTemporaryFile
+from urllib.parse import urlencode, urlsplit
+from uuid import uuid4
+
+from aiohttp import ClientError, ClientSession, ClientTimeout
+
+
+SITE = "https://openheiyao.top"
+CATALOG = "/v2/curated-resources"
+UUID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+VERSION = r"(?<![A-Za-z0-9])v\d{1,5}(?!\d)"
+TOKEN = re.compile(r"[A-Za-z0-9._~-]{1,4096}")
+FULL_SECTION = re.compile(r"^\s*完整触发提示词(?:\s*[\(（【][^\)）】]*[\)）】])?\s*[:：]\s*(.*)$")
+OTHER_SECTION = re.compile(r"^[\u3400-\u9fff][^:：]{0,30}[:：]")
+MESSAGES = {
+    "ACCOUNT_INVALID_CREDENTIALS": "官网账号或密码不正确",
+    "DOWNLOAD_MEMBERSHIP_REQUIRED": "官网账号需要具备此 LoRA 的会员下载权益",
+    "DOWNLOAD_QUOTA_EXHAUSTED": "当前官网账号的 LoRA 下载额度已用完",
+}
+
+
+class HeiyaoError(ValueError):
+    def __init__(self, message, status=400, code="IMPORT_ERROR"):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+
+
+def lookup_id(value):
+    if re.fullmatch(UUID, value):
+        return value
+    url = urlsplit(value)
+    match = re.fullmatch(r"lora/(" + UUID + r")", url.fragment)
+    if url.scheme == "https" and url.netloc == "openheiyao.top" and url.path in ("", "/") and match:
+        return match[1]
+    return None
+
+
+def full_prompt(summary):
+    lines = summary.splitlines()
+    for number, line in enumerate(lines):
+        match = FULL_SECTION.match(line)
+        if not match:
+            continue
+        parts = [match[1].strip()] if match[1].strip() else []
+        for next_line in lines[number + 1:]:
+            value = next_line.strip()
+            if OTHER_SECTION.match(value) or (parts and not value):
+                break
+            if value:
+                parts.append(value)
+        if parts:
+            return "\n".join(parts)
+    raise HeiyaoError("官网详情没有可识别的完整触发提示词")
+
+
+def website_prompt(summary):
+    try:
+        return full_prompt(summary)
+    except HeiyaoError:
+        if re.search(r"(?:^|[，,。；;])\s*(?:未记录固定触发词|无需固定触发词)(?:[。.!！]|$)", summary):
+            return ""
+        raise
+
+
+def membership_view(data):
+    month = re.match(r"^\d{4}-(?:0[1-9]|1[0-2])(?=-|$)", str(data.get("monthStart", "")))
+    active = data.get("active")
+    tier = (data.get("membership") or {}).get("tier")
+    lora = data.get("lora") or {}
+    used, remaining = lora.get("used"), lora.get("remaining")
+    unlimited = active is True and tier == "LIFETIME"
+    if (not month or type(active) is not bool or type(used) is not int or used < 0
+            or (not unlimited and (type(remaining) is not int or remaining < 0))):
+        raise HeiyaoError("官网返回的 LoRA 额度格式无效", 502)
+    return {"month": month[0], "active": active, "tier": tier,
+            "used": used, "remaining": None if unlimited else remaining, "unlimited": unlimited}
+
+
+def safe_ticket(resource_id, path):
+    prefix = f"{CATALOG}/{resource_id}/private-download/file?ticket="
+    if not isinstance(path, str) or not re.fullmatch(re.escape(prefix) + r"\d{1,12}\.[A-Za-z0-9_-]{43}", path):
+        raise HeiyaoError("官网返回的下载授权无效", 502)
+    return path
+
+
+@dataclass(frozen=True)
+class Resource:
+    id: str
+    title: str
+    prompt: str
+    version: str
+    name: str
+    size: int
+    sha256: str
+
+    def destination(self, root):
+        return root / "黑曜官网" / self.id / self.name
+
+
+def verify_weight(path, resource):
+    try:
+        if path.stat().st_size != resource.size or not path.is_file():
+            return False
+        with path.open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest() == resource.sha256
+    except FileNotFoundError:
+        return False
+
+
+def matching_weight(root, resource):
+    unsuffixed = re.sub(r"_" + re.escape(resource.version) + r"(?=\.safetensors$)", "", resource.name)
+    candidates = (root / resource.name, root / unsuffixed, resource.destination(root))
+    for path in dict.fromkeys(candidates):
+        if path.resolve().is_relative_to(root) and verify_weight(path, resource):
+            return path
+    return None
+
+
+def website_token(body, expiry_key):
+    token = body.get("accessToken")
+    try:
+        expiry = datetime.fromisoformat(body.get(expiry_key, "")).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        expiry = datetime.min.replace(tzinfo=timezone.utc)
+    if not isinstance(token, str) or not TOKEN.fullmatch(token) or expiry <= datetime.now(timezone.utc):
+        raise HeiyaoError("官网登录或访客会话响应无效", 502)
+    return token, expiry
+
+
+class Site:
+    def __init__(self, root, data_dir, *, index_path=None):
+        self.root = root.resolve()
+        self.data_dir = data_dir
+        index = index_path if index_path is not None else data_dir / "heiyao_verified_weights.json"
+        self.index = json.loads(index.read_text(encoding="utf-8"))
+        self.visitor = None
+        self.refresh = None
+        self.accounts = {}
+        # A reserved key with no path means issuance was ambiguous or the file ticket stopped working.
+        self.download_tickets = {}
+        self.identity = None
+        self.visitor_lock = asyncio.Lock()
+        self.import_lock = asyncio.Lock()
+
+    async def json(self, path, token=None, payload=None, *, post=False):
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=18)) as session:
+                async with session.request("POST" if post or payload is not None else "GET", SITE + path,
+                                           headers=headers, json=payload, allow_redirects=False) as response:
+                    try:
+                        body = await response.json(content_type=None)
+                    except ValueError:
+                        body = {}
+                    if not isinstance(body, dict):
+                        body = {}
+                    if response.status == 204 and path == "/v1/accounts/logout":
+                        return {}
+                    if not 200 <= response.status < 300 or not body:
+                        code = body.get("code")
+                        if not isinstance(code, str) or not re.fullmatch(r"[A-Z_]{1,60}", code):
+                            code = "SITE_RESPONSE_ERROR"
+                        status = response.status if response.status in (400, 401, 403, 404, 409, 429) else 502
+                        raise HeiyaoError(MESSAGES.get(code, f"官网请求失败（{response.status}）"), status, code)
+                    return body
+        except (ClientError, asyncio.TimeoutError) as error:
+            raise HeiyaoError("暂时无法连接黑曜官网", 502) from error
+
+    def device(self):
+        if self.identity is not None:
+            return self.identity
+        path = self.data_dir / "heiyao_device.json"
+        try:
+            identity = json.loads(path.read_text(encoding="utf-8"))
+            if not re.fullmatch(UUID, identity["deviceId"]) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", identity["deviceCredential"]):
+                raise ValueError
+        except FileNotFoundError:
+            identity = {"deviceId": str(uuid4()), "deviceCredential": token_urlsafe(32)}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(identity), encoding="utf-8")
+        except (KeyError, TypeError, ValueError) as error:
+            raise HeiyaoError("本地官网设备配置无法读取", 500) from error
+        self.identity = identity
+        return identity
+
+    async def visitor_token(self, rejected=None):
+        async with self.visitor_lock:
+            if self.visitor and self.visitor[0] != rejected and self.visitor[1] > datetime.now(timezone.utc):
+                return self.visitor[0]
+            device = self.device()
+            body = None
+            if self.refresh:
+                try:
+                    body = await self.json("/v1/auth/token/refresh", payload={
+                        "deviceId": device["deviceId"], "refreshToken": self.refresh,
+                    })
+                except HeiyaoError as error:
+                    if error.status not in (400, 401, 403):
+                        raise
+            if body is None:
+                body = await self.json("/v1/device-sessions/register", payload={
+                    **device, "installChannel": "web-gallery", "appVersion": "0.1.0",
+                })
+            self.visitor = website_token(body, "accessTokenExpiresAt")
+            self.refresh = body.get("refreshToken")
+            return self.visitor[0]
+
+    async def read(self, path):
+        token = await self.visitor_token()
+        try:
+            return await self.json(path, token)
+        except HeiyaoError as error:
+            if error.status != 401:
+                raise
+        return await self.json(path, await self.visitor_token(rejected=token))
+
+    async def login(self, username, password):
+        if (not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{2,31}", username)
+                or not isinstance(password, str) or not 10 <= len(password) <= 128):
+            raise HeiyaoError("请填写有效的官网账号和密码")
+        body = await self.json("/v1/accounts/login", await self.visitor_token(),
+                               {"username": username, "password": password})
+        account = website_token(body, "expiresAt")
+        self.accounts = {key: value for key, value in self.accounts.items()
+                         if value[1] > datetime.now(timezone.utc)}
+        self.download_tickets = {key: value for key, value in self.download_tickets.items()
+                                 if key[0] in self.accounts}
+        handle = token_urlsafe(32)
+        self.accounts[handle] = account
+        return handle
+
+    async def logout(self, handle):
+        account = self.accounts.pop(handle, None) if isinstance(handle, str) else None
+        if account:
+            self.download_tickets = {key: value for key, value in self.download_tickets.items() if key[0] != handle}
+            try:
+                await self.json("/v1/accounts/logout", account[0], post=True)
+            except HeiyaoError:
+                pass
+
+    async def search(self, query):
+        exact = lookup_id(query)
+        if exact:
+            detail = await self.read(f"{CATALOG}/{exact}")
+            items = [detail]
+        else:
+            if "://" in query or len(query) > 120 or any(ord(char) < 32 for char in query):
+                raise HeiyaoError("请填写角色名或黑曜官网 LoRA 详情链接")
+            params = {"tag": "LoRA", "limit": 25}
+            if query:
+                params["query"] = query
+            items = (await self.read(CATALOG + "?" + urlencode(params))).get("items", [])
+        return [{"id": item["id"], "title": item["title"]} for item in items
+                if isinstance(item, dict) and "LoRA" in item.get("tags", [])
+                and isinstance(item.get("id"), str) and re.fullmatch(UUID, item["id"])
+                and isinstance(item.get("title"), str)]
+
+    async def resource(self, resource_id):
+        if not re.fullmatch(UUID, resource_id):
+            raise HeiyaoError("LoRA 资源 ID 格式不正确")
+        record = self.index.get(resource_id)
+        if not record:
+            raise HeiyaoError("此条目暂无可核对版本与 SHA-256 的权重登记", 409)
+        detail = await self.read(f"{CATALOG}/{resource_id}")
+        title = detail.get("title", "")
+        if (detail.get("id") != resource_id or "LoRA" not in detail.get("tags", [])
+                or re.search(VERSION, title, re.I) is None
+                or re.search(VERSION, title, re.I)[0].lower() != record["version"]):
+            raise HeiyaoError("官网条目版本与已校验的权重登记不一致", 409)
+        prompt = website_prompt(detail.get("summary") or "")
+        name = record["name"]
+        if not re.fullmatch(r'[^\\/:*?"<>|\x00-\x1f]+\.safetensors', name, re.I):
+            raise HeiyaoError("权重文件名无效", 409)
+        return Resource(resource_id, title, prompt, record["version"], name, record["bytes"], record["sha256"])
+
+    async def detail(self, resource_id):
+        resource = await self.resource(resource_id)
+        existing = await asyncio.to_thread(matching_weight, self.root, resource)
+        available = bool(existing)
+        if not existing:
+            available = (await self.read(f"{CATALOG}/{resource_id}/private-download/status")).get("available") is True
+        return {"title": resource.title, "version": resource.version, "prompt": resource.prompt,
+                "bytes": resource.size, "local": bool(existing), "available": available}
+
+    def account(self, handle):
+        account = self.accounts.get(handle) if isinstance(handle, str) else None
+        if not account or account[1] <= datetime.now(timezone.utc):
+            raise HeiyaoError("请先登录有下载权限的黑曜官网账号", 401, "LOGIN_REQUIRED")
+        return account[0]
+
+    async def membership(self, handle):
+        token = self.account(handle)
+        try:
+            return membership_view(await self.json("/v1/accounts/download-membership", token))
+        except HeiyaoError as error:
+            if error.status == 401:
+                raise HeiyaoError("官网登录已过期，请重新登录", 401, "LOGIN_REQUIRED") from error
+            raise
+
+    async def ticket(self, key, resource):
+        if key not in self.download_tickets:
+            self.download_tickets[key] = None
+            try:
+                result = await self.json(f"{CATALOG}/{resource.id}/private-download", self.account(key[0]), post=True)
+                self.download_tickets[key] = safe_ticket(resource.id, result.get("downloadPath"))
+            except HeiyaoError as error:
+                if error.status < 500:
+                    self.download_tickets.pop(key, None)
+                    if error.status == 401:
+                        raise HeiyaoError("官网登录已过期，请重新登录", 401, "LOGIN_REQUIRED") from error
+                    raise
+                # A transport or server failure does not tell us whether the quota operation completed.
+        path = self.download_tickets[key]
+        if path is None:
+            raise HeiyaoError("上次下载授权未确认或已不可用，请核对官网额度后再申请新票据",
+                              409, "NEW_TICKET_REQUIRED")
+        return path
+
+    async def get_weight(self, resource_id, handle, *, allow_download=False, renew_ticket=False):
+        async with self.import_lock:
+            resource = await self.resource(resource_id)
+            existing = await asyncio.to_thread(matching_weight, self.root, resource)
+            if existing:
+                return existing.relative_to(self.root).as_posix(), resource.prompt, True
+            if not allow_download:
+                raise HeiyaoError("本地同版权重已不可用，请重新选择版本并确认下载", 409)
+            destination = resource.destination(self.root)
+            if not destination.resolve().is_relative_to(self.root) or destination.exists():
+                raise HeiyaoError("本地同名权重已存在，请先核对文件版本", 409)
+            self.account(handle)
+            key = (handle, resource.id, resource.sha256)
+            if renew_ticket:
+                self.download_tickets.pop(key, None)
+            path = await self.ticket(key, resource)
+            try:
+                await self.download(path, resource, destination)
+            except HeiyaoError as error:
+                if error.code == "NEW_TICKET_REQUIRED":
+                    self.download_tickets[key] = None
+                raise
+            self.download_tickets.pop(key, None)
+            return destination.relative_to(self.root).as_posix(), resource.prompt, False
+
+    async def download(self, path, resource, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        length = 0
+        digest = hashlib.sha256()
+        pending = None
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=900, sock_read=50)) as session:
+                async with session.get(SITE + path, allow_redirects=False) as response:
+                    if response.status in (401, 403, 410):
+                        raise HeiyaoError("原官网下载票据已不可用，请核对额度后再申请新票据",
+                                          409, "NEW_TICKET_REQUIRED")
+                    if response.status != 200 or (response.content_length is not None
+                                                  and response.content_length != resource.size):
+                        raise HeiyaoError("官网下载文件响应异常", 502)
+                    with NamedTemporaryFile(dir=destination.parent, suffix=".part", delete=False) as file:
+                        pending = Path(file.name)
+                        async for part in response.content.iter_chunked(1024 * 1024):
+                            length += len(part)
+                            if length > resource.size:
+                                raise HeiyaoError("官网下载文件超过登记大小", 502)
+                            digest.update(part)
+                            file.write(part)
+            if length != resource.size or digest.hexdigest() != resource.sha256:
+                raise HeiyaoError("权重大小或 SHA-256 校验失败", 409)
+            if destination.exists():
+                raise HeiyaoError("导入位置已出现同名权重", 409)
+            pending.rename(destination)
+        except (ClientError, asyncio.TimeoutError) as error:
+            raise HeiyaoError("下载中断，请检查网络后重试", 502) from error
+        finally:
+            if pending:
+                pending.unlink(missing_ok=True)

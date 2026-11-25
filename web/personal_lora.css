@@ -1,0 +1,398 @@
+.personal-lora,
+.personal-lora-dialog {
+    --lora-text: #e4f0ff;
+    --lora-muted: #9cacc2;
+    --lora-surface: #111b29;
+    --lora-border: #34475c;
+    --lora-accent: #70daf0;
+    box-sizing: border-box;
+    color: var(--lora-text);
+    color-scheme: dark;
+    font: 12px/1.4 system-ui, sans-serif;
+}
+
+
+.personal-lora {
+    container-type: inline-size;
+    display: grid;
+    grid-template-rows: auto minmax(34px, 1fr) auto auto;
+    gap: 5px;
+    width: 100%;
+    height: 100%;
+    padding: 6px;
+    overflow: hidden;
+    border: 1px solid #344557;
+    border-radius: 7px;
+    background: #141e2a;
+    user-select: none;
+}
+
+.personal-lora-toolbar,
+.personal-lora-actions {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.personal-lora-toolbar {
+    justify-content: space-between;
+    min-width: 0;
+    padding: 1px 2px 2px;
+}
+
+.personal-lora-brand {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    padding-left: 5px;
+    border-left: 2px solid #af945c;
+    white-space: nowrap;
+}
+
+.personal-lora-brand strong {
+    flex-shrink: 0;
+    color: #e1cd9e;
+    font-size: 11px;
+    font-weight: 650;
+}
+
+.personal-lora-brand a {
+    min-width: 0;
+    overflow: hidden;
+    color: #a9d5e2;
+    font-size: 11px;
+    text-decoration: none;
+    text-overflow: ellipsis;
+}
+
+.personal-lora-brand a:hover {
+    text-decoration: underline;
+}
+
+.personal-lora-cards {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    gap: 3px;
+    overflow: auto;
+    padding: 1px 2px 3px 1px;
+    scrollbar-color: #45667b #141e2a;
+    scrollbar-width: thin;
+    overscroll-behavior: contain;
+}
+
+.personal-lora-card {
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: 38px minmax(0, 1fr) max-content 19px;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    min-height: 28px;
+    padding: 2px 5px;
+    border: 1px solid #344659;
+    border-radius: 5px;
+    background: #1a2634;
+}
+
+.personal-lora-card.is-enabled {
+    border-color: #496879;
+    background: #1b2b39;
+}
+
+.personal-lora-slot-label {
+    overflow: hidden;
+    color: #a9bed5;
+    font-size: 11px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.personal-lora-card.is-enabled .personal-lora-slot-label {
+    color: #b6e1ea;
+}
+
+.personal-lora select,
+.personal-lora input[type="number"],
+.personal-lora button,
+.personal-lora-dialog button {
+    box-sizing: border-box;
+    min-width: 0;
+    margin: 0;
+    border: 1px solid #40576d;
+    border-radius: 5px;
+    color: var(--lora-text);
+    font: inherit;
+}
+
+.personal-lora select,
+.personal-lora input[type="number"] {
+    background: #0f1a27;
+    box-shadow: inset 0 1px 2px #0009;
+}
+
+.personal-lora select {
+    width: 100%;
+    min-height: 22px;
+    padding: 1px 4px;
+    text-overflow: ellipsis;
+}
+
+.personal-lora button,
+.personal-lora-dialog button {
+    padding: 3px 7px;
+    background: linear-gradient(#273d53, #192b3d);
+    box-shadow: 0 1px 1px #04080dbb, inset 0 1px 0 #c4dfea27;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.personal-lora button:hover:not(:disabled),
+.personal-lora-dialog button:hover:not(:disabled) {
+    border-color: #71aebc;
+    filter: brightness(1.15);
+}
+
+.personal-lora button:active:not(:disabled),
+.personal-lora-dialog button:active:not(:disabled) {
+    transform: translateY(1px);
+    box-shadow: inset 0 1px 3px #080f18b0;
+}
+
+.personal-lora button:disabled,
+.personal-lora-dialog button:disabled {
+    opacity: .48;
+    cursor: default;
+}
+
+.personal-lora button.personal-lora-add {
+    padding: 3px 6px;
+    border-color: #527f92;
+    background: #274352;
+    color: #f1fcff;
+    font-weight: 650;
+}
+
+.personal-lora button.personal-lora-remove {
+    width: 19px;
+    height: 19px;
+    padding: 0;
+    border-color: #4b5364;
+    color: #c3aab9;
+    font-size: 14px;
+    line-height: 1;
+}
+
+.personal-lora button.personal-lora-remove:hover {
+    border-color: #cd8193;
+    background: linear-gradient(#673647, #402433);
+    color: #ffe8ed;
+}
+
+.personal-lora-actions {
+    font-size: 11px;
+}
+
+.personal-lora-toggle,
+.personal-lora-weight {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: #ccdbeb;
+    white-space: nowrap;
+}
+
+.personal-lora-toggle {
+    cursor: pointer;
+}
+
+.personal-lora-toggle input[type="checkbox"] {
+    appearance: none;
+    display: inline-grid;
+    place-items: center;
+    box-sizing: border-box;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    border: 1px solid #62788d;
+    border-radius: 4px;
+    background: linear-gradient(#34465a, #1d2939 47%, #111b28);
+    box-shadow: 0 2px 0 #050911, inset 0 1px 0 #d6e7ff5c, inset 0 -1px 2px #02080ad1;
+    cursor: pointer;
+}
+
+.personal-lora-toggle input[type="checkbox"]:checked {
+    border-color: #99f2f6;
+    background: linear-gradient(#9adce8, #69b6cc 55%, #4292a7);
+    box-shadow: 0 1px 0 #103844, inset 0 1px 0 #edffff94;
+}
+
+.personal-lora-toggle input[type="checkbox"]:checked::after {
+    content: "";
+    width: 7px;
+    height: 4px;
+    border: solid #103440;
+    border-width: 0 0 2px 2px;
+    transform: translateY(-1px) rotate(-45deg);
+}
+
+.personal-lora-toggle input[type="checkbox"]:active {
+    transform: translateY(1px);
+    box-shadow: inset 0 1px 2px #00141e88;
+}
+
+.personal-lora :focus-visible,
+.personal-lora-dialog :focus-visible {
+    outline: 2px solid var(--lora-accent);
+    outline-offset: 2px;
+}
+
+.personal-lora input[type="number"] {
+    width: 35px;
+    padding: 2px 3px;
+    text-align: center;
+    appearance: textfield;
+}
+
+.personal-lora input[type="number"]::-webkit-inner-spin-button {
+    appearance: none;
+}
+
+.personal-lora button.personal-lora-edit {
+    padding: 2px 4px;
+}
+
+.personal-lora-empty {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 14px;
+    border: 1px dashed var(--lora-border);
+    border-radius: 8px;
+    color: var(--lora-muted);
+    text-align: center;
+}
+
+.personal-lora output:empty,
+.personal-lora-dialog output:empty {
+    display: none;
+}
+
+.personal-lora output,
+.personal-lora-dialog output {
+    color: #ffc5c9;
+    overflow-wrap: anywhere;
+}
+
+.personal-lora details {
+    min-width: 0;
+    border: 1px solid #31485d;
+    border-radius: 6px;
+    background: #101b2a;
+}
+
+.personal-lora summary {
+    padding: 3px 6px;
+    color: #c3e4f3;
+    cursor: pointer;
+}
+
+.personal-lora pre {
+    max-height: 82px;
+    margin: 1px 7px 7px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: #c5d2e4;
+    font: 11px/1.5 ui-monospace, monospace;
+    user-select: text;
+}
+
+.personal-lora-scene {
+    border-color: #40576d !important;
+    border-radius: 7px !important;
+    background: #101924 !important;
+    box-shadow: inset 0 1px 3px #060c13ae;
+}
+
+.personal-lora-dialog {
+    max-width: min(720px, 90vw);
+    padding: 17px;
+    border: 1px solid #4b7189;
+    border-radius: 11px;
+    background: linear-gradient(145deg, #20384b, #111a27 78%);
+    box-shadow: 0 12px 40px #0009, inset 0 1px 0 #c2ecff33;
+}
+
+.personal-lora-dialog::backdrop {
+    background: #070a11ab;
+}
+
+.personal-lora-dialog form {
+    display: grid;
+    gap: 10px;
+    width: min(640px, 78vw);
+}
+
+.personal-lora-dialog textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 210px;
+    padding: 10px;
+    resize: vertical;
+    border: 1px solid #426079;
+    border-radius: 7px;
+    color: inherit;
+    background: #0e1826;
+}
+
+.personal-lora-dialog nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+
+@container (max-width: 360px) {
+    .personal-lora-toggle > span,
+    .personal-lora-weight > span {
+        display: none;
+    }
+
+    .personal-lora-card {
+        grid-template-columns: 34px minmax(0, 1fr) max-content 19px;
+        gap: 4px;
+    }
+}
+
+.personal-lora-header-actions,
+.personal-lora-website-line {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.personal-lora-website [hidden],
+.personal-lora-header-actions [hidden] {
+    display: none;
+}
+
+.personal-lora-website-line input,
+.personal-lora-website select {
+    box-sizing: border-box;
+    min-width: 0;
+    padding: 6px;
+    border: 1px solid #426079;
+    border-radius: 5px;
+    color: inherit;
+    background: #0e1826;
+}
+
+.personal-lora-website-line input {
+    flex: 1;
+}
+
+.personal-lora-quota {
+    margin: 0;
+    color: #aecddf;
+}
