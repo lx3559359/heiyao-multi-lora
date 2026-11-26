@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { openWebsiteImport } from "./website_import.js";
 import { switchSlotWeight } from "./slot_version.js";
+import { openWebsiteLibrary } from "./website_library.js";
 
 const blankRow = (inject) => ({
     name: "", enabled: false, strength: 0.9, inject, overrides: {},
@@ -163,7 +164,10 @@ function addSlots(node, name, inputData) {
     const website = element("button", "从黑曜官网导入 LoRA", "官网导入");
     website.type = "button";
     website.hidden = true;
-    actions.append(website, add);
+    const library = element("button", "比对黑曜官网 LoRA 库", "官网比对");
+    library.type = "button";
+    library.hidden = true;
+    actions.append(library, website, add);
     toolbar.append(brand, actions);
 
     const cards = element("div");
@@ -330,8 +334,9 @@ function addSlots(node, name, inputData) {
         // Frontend files can update before the running backend is restarted.
         const reachedLegacyLimit = !catalog.dynamic_slots && rows.length >= 8;
         add.disabled = reachedLegacyLimit;
-        website.hidden = reachedLegacyLimit || !catalog.website_import ||
-            !["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
+        const local = ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
+        website.hidden = reachedLegacyLimit || !catalog.website_import || !local;
+        library.hidden = !catalog.website_library || !local;
         add.title = reachedLegacyLimit
             ? "主服务重启后可添加超过 8 个槽位"
             : "新增 LoRA 槽位";
@@ -354,6 +359,7 @@ function addSlots(node, name, inputData) {
         return catalog;
     }
 
+    library.onclick = () => openWebsiteLibrary(() => changes.dispatchEvent(new Event("catalog")));
     website.onclick = () => openWebsiteImport(({name: filename, prompt: text, head_prompt: head, prompt_mode: mode}) => {
         editStack(() => rows.push({
             ...blankRow(Boolean(text || head)), name: filename, enabled: true, prompt_mode: mode,

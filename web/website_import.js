@@ -3,14 +3,14 @@ import { api } from "../../scripts/api.js";
 let websiteSession;
 const tiers = { MONTHLY: "月度会员", QUARTERLY: "季度会员", ANNUAL: "年度会员", LIFETIME: "终身赞助" };
 
-function make(tag, text = "", options = {}) {
+export function make(tag, text = "", options = {}) {
     const element = document.createElement(tag);
     element.textContent = text;
     Object.assign(element, options);
     return element;
 }
 
-async function websiteRequest(path, body) {
+export async function websiteRequest(path, body) {
     const response = await api.fetchApi("/personal-lora/site/" + path, body === undefined ? {} : {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -21,6 +21,62 @@ async function websiteRequest(path, body) {
         throw Object.assign(new Error(result.message ?? "无法访问官网导入服务"), { code: result.code });
     }
     return result;
+}
+
+export function websiteAccount(showMembership = true) {
+    const quota = make("p", "", { className: "personal-lora-quota", hidden: true });
+    quota.setAttribute("aria-live", "polite");
+    const account = make("div", "", { className: "personal-lora-website-line", hidden: true });
+    const username = make("input", "", { placeholder: "黑曜官网账号", autocomplete: "username" });
+    const password = make("input", "", { type: "password", placeholder: "官网密码", autocomplete: "current-password" });
+    username.setAttribute("aria-label", "黑曜官网账号");
+    password.setAttribute("aria-label", "官网密码");
+    const login = make("button", "登录官网", { type: "button" });
+    account.append(username, password, login);
+
+    const logout = make("button", "退出官网登录", { type: "button", hidden: !websiteSession });
+
+    function requireLogin() {
+        websiteSession = undefined;
+        logout.hidden = true;
+        account.hidden = false;
+        username.focus();
+    }
+
+    async function signIn() {
+        try {
+            const result = await websiteRequest("login", { username: username.value.trim(), password: password.value });
+            websiteSession = result.session;
+            account.hidden = true;
+            logout.hidden = false;
+        } finally {
+            password.value = "";
+        }
+    }
+
+    async function signOut() {
+        await websiteRequest("logout", { session: websiteSession });
+        websiteSession = undefined;
+        logout.hidden = true;
+    }
+
+    async function refreshQuota() {
+        const session = showMembership ? websiteSession : undefined;
+        quota.hidden = !session;
+        if (!session) return;
+        try {
+            const state = await websiteRequest("membership", { session });
+            if (websiteSession !== session) return;
+            const tier = state.active ? (tiers[state.tier] ?? "官网会员") : "未开通下载会员";
+            const remaining = state.unlimited ? "不限量" : "剩余 " + state.remaining;
+            quota.textContent = tier + " · " + state.month + " LoRA · 已用 " + state.used + " · " + remaining;
+        } catch (error) {
+            if (websiteSession === session) quota.textContent = error.message;
+        }
+    }
+
+    return { account, quota, login, logout, requireLogin, signIn, signOut, refreshQuota,
+        get session() { return websiteSession; } };
 }
 
 export function openWebsiteImport(onImport, showMembership = false, update = null) {
@@ -46,24 +102,15 @@ export function openWebsiteImport(onImport, showMembership = false, update = nul
     mode.append(new Option("简短触发词", "short"), new Option("完整头部特征触发词", "head"));
     const prompt = make("textarea", "", { readOnly: true, hidden: true });
     prompt.setAttribute("aria-label", "官网触发提示词预览");
-    const quota = make("p", "", { className: "personal-lora-quota", hidden: true });
-    quota.setAttribute("aria-live", "polite");
+    const auth = websiteAccount(showMembership);
+    const { account, quota, login, logout, refreshQuota } = auth;
     const status = make("output");
     status.setAttribute("aria-live", "polite");
-
-    const account = make("div", "", { className: "personal-lora-website-line", hidden: true });
-    const username = make("input", "", { placeholder: "黑曜官网账号", autocomplete: "username" });
-    const password = make("input", "", { type: "password", placeholder: "官网密码", autocomplete: "current-password" });
-    username.setAttribute("aria-label", "黑曜官网账号");
-    password.setAttribute("aria-label", "官网密码");
-    const login = make("button", "登录官网", { type: "button" });
-    account.append(username, password, login);
 
     const controls = make("nav");
     const importButton = make("button", updating ? "下载并切换当前槽位" : "导入到新槽位",
         { type: "button", disabled: true });
     const downloadButton = make("button", "只下载", { type: "button", disabled: true, hidden: !updating });
-    const logout = make("button", "退出官网登录", { type: "button", hidden: !websiteSession });
     const close = make("button", "关闭");
     controls.append(downloadButton, importButton, logout, close);
     form.append(heading, searchLine, localVersion, remoteVersion, role, mode, prompt, account, quota, status, controls);
@@ -75,21 +122,6 @@ export function openWebsiteImport(onImport, showMembership = false, update = nul
     let activeDetail;
     let busy = false;
     let renewTicket = false;
-    async function refreshQuota() {
-        const session = showMembership ? websiteSession : undefined;
-        quota.hidden = !session;
-        if (!session) return;
-        try {
-            const state = await websiteRequest("membership", { session });
-            if (websiteSession !== session) return;
-            const tier = state.active ? (tiers[state.tier] ?? "官网会员") : "未开通下载会员";
-            const remaining = state.unlimited ? "不限量" : "剩余 " + state.remaining;
-            quota.textContent = tier + " · " + state.month + " LoRA · 已用 " + state.used + " · " + remaining;
-        } catch (error) {
-            if (websiteSession === session) quota.textContent = error.message;
-        }
-    }
-
     void refreshQuota();
     async function run(action) {
         if (busy) return;
@@ -100,10 +132,7 @@ export function openWebsiteImport(onImport, showMembership = false, update = nul
         } catch (error) {
             status.textContent = error.message;
             if (error.code === "LOGIN_REQUIRED") {
-                websiteSession = undefined;
-                logout.hidden = true;
-                account.hidden = false;
-                username.focus();
+                auth.requireLogin();
             }
             if (error.code === "NEW_TICKET_REQUIRED") {
                 renewTicket = true;
@@ -214,21 +243,12 @@ export function openWebsiteImport(onImport, showMembership = false, update = nul
     role.onchange = () => run(showRole);
     login.onclick = () => run(async () => {
         status.textContent = "正在登录黑曜官网…";
-        try {
-            const result = await websiteRequest("login", { username: username.value.trim(), password: password.value });
-            websiteSession = result.session;
-            account.hidden = true;
-            logout.hidden = false;
-            status.textContent = "已登录官网，可以下载。";
-            await refreshQuota();
-        } finally {
-            password.value = "";
-        }
+        await auth.signIn();
+        status.textContent = "已登录官网，可以下载。";
+        await refreshQuota();
     });
     logout.onclick = () => run(async () => {
-        await websiteRequest("logout", { session: websiteSession });
-        websiteSession = undefined;
-        logout.hidden = true;
+        await auth.signOut();
         status.textContent = "已退出官网登录。";
         await refreshQuota();
     });

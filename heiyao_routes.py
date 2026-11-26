@@ -78,14 +78,14 @@ def register_website_routes(routes, package, state, library, head_library, root,
         await site.logout((await body(request)).get("session"))
         return {"ok": True}
 
-    async def import_model(data, versioned=False):
+    async def import_model(data, versioned=False, expected_sha=None):
         resource_id = data.get("id")
         if not isinstance(resource_id, str):
             raise HeiyaoError("请选择官网 LoRA")
         name, resource, reused = await site.import_weight(
             resource_id, data.get("session"), allow_download=data.get("download") is True,
             renew_ticket=data.get("renewTicket") is True,
-            versioned=versioned,
+            versioned=versioned, expected_sha=expected_sha,
         )
         if resolve_lora(root, name, extensions) is None:
             raise HeiyaoError("ComfyUI 还未登记该权重路径", 409)
@@ -99,6 +99,20 @@ def register_website_routes(routes, package, state, library, head_library, root,
     @guarded
     async def import_role(request):
         return await import_model(await body(request))
+
+    @routes.get("/personal-lora/site/library")
+    @guarded
+    async def check_library(request):
+        return await site.compare_library()
+
+    @routes.post("/personal-lora/site/library/download")
+    @guarded
+    async def download_missing(request):
+        data = await body(request)
+        expected_sha = data.get("sha256")
+        if not isinstance(expected_sha, str) or len(expected_sha) != 64:
+            raise HeiyaoError("请先比对官网目录，再勾选缺少的 LoRA")
+        return await import_model(data, versioned=True, expected_sha=expected_sha)
 
     async def slot_info(raw_name):
         name = lora_key(raw_name)

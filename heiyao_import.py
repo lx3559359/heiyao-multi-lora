@@ -178,6 +178,8 @@ class Site:
         self.identity = None
         self.visitor_lock = asyncio.Lock()
         self.import_lock = asyncio.Lock()
+        self.compare_lock = asyncio.Lock()
+        self.local_fingerprints = {}
 
     async def refresh_index(self):
         if self.index_url is None:
@@ -339,6 +341,58 @@ class Site:
             seen.add(cursor)
             params["cursor"] = cursor
 
+    @staticmethod
+    def title_matches(record, title):
+        version = re.search(VERSION, title, re.I)
+        expected = record.get("title")
+        return title == expected if expected else bool(version and version[0].lower() == record["version"])
+
+    def compare_weights(self, items):
+        verified, unverified = [], []
+        for item in items:
+            record = self.index.get(item["id"])
+            if record and self.title_matches(record, item["title"]):
+                verified.append((item, record))
+            else:
+                unverified.append(item)
+
+        sizes = {record["bytes"] for _, record in verified}
+        scanned = {}
+        files = self.local_loras()
+        fingerprints = set()
+        for name, path in files.items():
+            try:
+                stat = path.stat()
+                if stat.st_size not in sizes:
+                    continue
+                signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+                cached = self.local_fingerprints.get(name)
+                if cached and cached[0] == signature:
+                    digest = cached[1]
+                else:
+                    with path.open("rb") as stream:
+                        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                scanned[name] = (signature, digest)
+                fingerprints.add((stat.st_size, digest))
+            except FileNotFoundError:
+                continue
+        self.local_fingerprints = scanned
+        missing = [
+            {**item, "version": record["version"], "bytes": record["bytes"], "sha256": record["sha256"]}
+            for item, record in verified
+            if (record["bytes"], record["sha256"]) not in fingerprints
+        ]
+        return {
+            "local_count": len(files), "website_count": len(items),
+            "matched_count": len(verified) - len(missing),
+            "missing": missing, "unverified": unverified,
+        }
+
+    async def compare_library(self):
+        async with self.compare_lock:
+            items, _ = await asyncio.gather(self.search(""), self.refresh_index())
+            return await asyncio.to_thread(self.compare_weights, items)
+
     async def resource(self, resource_id):
         if not re.fullmatch(UUID, resource_id):
             raise HeiyaoError("LoRA 资源 ID 格式不正确")
@@ -351,10 +405,8 @@ class Site:
         title = detail.get("title", "")
         if not isinstance(title, str):
             raise HeiyaoError("官网详情没有有效的 LoRA 标题", 502)
-        version = re.search(VERSION, title, re.I)
-        expected_title = record.get("title")
-        matches = title == expected_title if expected_title else bool(version and version[0].lower() == record["version"])
-        if detail.get("id") != resource_id or "LoRA" not in detail.get("tags", []) or not matches:
+        if (detail.get("id") != resource_id or "LoRA" not in detail.get("tags", [])
+                or not self.title_matches(record, title)):
             raise HeiyaoError("官网条目版本与已校验的权重登记不一致", 409)
         summary = detail.get("summary") or ""
         prompt = website_prompt(summary)
@@ -367,8 +419,11 @@ class Site:
     def local_weight(self, resource):
         if self.local_loras is not None:
             names = resource.weight_names()
+            scanned = getattr(self, "local_fingerprints", {})
             for name, path in self.local_loras().items():
-                if name.rsplit("/", 1)[-1] in names and verify_weight(path, resource):
+                same_name = name.rsplit("/", 1)[-1] in names
+                same_digest = name in scanned and scanned[name][1] == resource.sha256
+                if (same_name or same_digest) and verify_weight(path, resource):
                     return name
             return None
         path = matching_weight(self.root, resource)
@@ -423,9 +478,12 @@ class Site:
         )
         return name, resource.prompt, reused
 
-    async def import_weight(self, resource_id, handle, *, allow_download=False, renew_ticket=False, versioned=False):
+    async def import_weight(self, resource_id, handle, *, allow_download=False, renew_ticket=False,
+                            versioned=False, expected_sha=None):
         async with self.import_lock:
             resource = await self.resource(resource_id)
+            if expected_sha is not None and resource.sha256 != expected_sha:
+                raise HeiyaoError("官网权重登记已变化，请重新比对后下载", 409)
             existing = await asyncio.to_thread(self.local_weight, resource)
             if existing:
                 return existing, resource, True

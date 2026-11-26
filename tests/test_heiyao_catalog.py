@@ -1,12 +1,14 @@
+import asyncio
 from pathlib import Path
 import hashlib
+import json
 import sys
 import tempfile
 import unittest
 from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from heiyao_import import Site, website_prompt
+from heiyao_import import HeiyaoError, Resource, Site, website_prompt
 
 
 FIRST = "11111111-1111-1111-1111-111111111111"
@@ -68,3 +70,56 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(site.local_weight(resource), name)
             model.write_bytes(b"other contents")
             self.assertIsNone(site.local_weight(resource))
+
+
+    async def test_library_compare_by_content_with_local_only_and_unverified_entries(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd() / "temp") as directory:
+            root = Path(directory)
+            renamed = root / "renamed.safetensors"
+            renamed.write_bytes(b"correct")
+            mismatch = root / "style.safetensors"
+            mismatch.write_bytes(b"other!!")
+            no_pin = "33333333-3333-3333-3333-333333333333"
+            index = root / "index.json"
+
+            def record(title, filename, payload):
+                return {"title": title, "version": "官网发布版", "name": filename,
+                        "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+
+            entries = {FIRST: record("角色 LoRA", "role.safetensors", b"correct"),
+                       STYLE: record("风格 LoRA", "style.safetensors", b"missing")}
+            index.write_text(json.dumps(entries), encoding="utf-8")
+            site = Site(root, root, index_path=index, local_loras=lambda: {
+                "renamed.safetensors": renamed, "style.safetensors": mismatch,
+            })
+
+            async def search(query):
+                self.assertEqual(query, "")
+                return [{"id": FIRST, "title": "角色 LoRA"}, {"id": STYLE, "title": "风格 LoRA"},
+                        {"id": no_pin, "title": "新 LoRA"}]
+
+            site.search = search
+            result = await site.compare_library()
+            self.assertEqual((result["local_count"], result["website_count"], result["matched_count"]), (2, 3, 1))
+            self.assertEqual([entry["id"] for entry in result["missing"]], [STYLE])
+            self.assertEqual([entry["id"] for entry in result["unverified"]], [no_pin])
+            resource = Resource(FIRST, "角色 LoRA", "", "官网发布版", "role.safetensors", 7, entries[FIRST]["sha256"])
+            self.assertEqual(site.local_weight(resource), renamed.name)
+            renamed.write_bytes(b"changed")
+            self.assertIsNone(site.local_weight(resource))
+
+    async def test_library_download_rejects_a_changed_pin_before_membership(self):
+        site = Site.__new__(Site)
+        site.import_lock = asyncio.Lock()
+
+        async def current_release(resource_id):
+            return Resource(resource_id, "角色 LoRA", "", "v002", "role.safetensors", 7, "a" * 64)
+
+        def unexpected_filesystem_check(resource):
+            self.fail("Changed pin should stop before checking for the file or requesting a ticket")
+
+        site.resource = current_release
+        site.local_weight = unexpected_filesystem_check
+        with self.assertRaises(HeiyaoError) as error:
+            await site.import_weight(FIRST, None, allow_download=True, expected_sha="b" * 64)
+        self.assertEqual(error.exception.status, 409)

@@ -400,3 +400,51 @@
     margin: 0;
     color: #aecddf;
 }
+
+
+.personal-lora-library-totals {
+    margin: 0;
+    padding: 8px 10px;
+    border: 1px solid #3d5c72;
+    border-radius: 6px;
+    color: #d9ecf5;
+    background: #112233;
+}
+
+.personal-lora-library-list {
+    max-height: min(34vh, 320px);
+    overflow: auto;
+    margin: 0;
+    padding: 0;
+    border: 1px solid #3d5c72;
+    border-radius: 6px;
+    list-style: none;
+}
+
+.personal-lora-library-list li {
+    padding: 5px 8px;
+    border-bottom: 1px solid #324959;
+    overflow-wrap: anywhere;
+}
+
+.personal-lora-library-list li:last-child {
+    border-bottom: 0;
+}
+
+.personal-lora-library-line {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 7px;
+}
+
+.personal-lora-library-line small {
+    color: #b3cada;
+    white-space: nowrap;
+}
+
+.personal-lora-library-error {
+    display: block;
+    color: #ffd3ae;
+    padding-left: 20px;
+}
