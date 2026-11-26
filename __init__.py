@@ -79,7 +79,9 @@ class PersonalLoRALoader:
 
 
 routes = PromptServer.instance.routes
-WEBSITE_IMPORT = register_website_routes(routes, PACKAGE, STATE, LIBRARY, HEAD_LIBRARY, LORA_ROOT, LORA_EXTENSIONS)
+WEBSITE_IMPORT = register_website_routes(
+    PromptServer.instance.app, routes, PACKAGE, STATE, LIBRARY, HEAD_LIBRARY, LORA_ROOT, LORA_EXTENSIONS,
+)
 
 
 @routes.get("/personal-lora/catalog")

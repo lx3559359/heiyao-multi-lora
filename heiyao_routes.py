@@ -24,11 +24,12 @@ def assert_loopback(request):
     raise HeiyaoError("请从本机 localhost 或 127.0.0.1 打开 ComfyUI 使用官网导入", 403)
 
 
-def register_website_routes(routes, package, state, library, head_library, root, extensions):
+def register_website_routes(app, routes, package, state, library, head_library, root, extensions):
     if root is None:
         return False
     site = Site(root, state, index_path=package / "data" / "heiyao_verified_weights.json",
                 local_loras=partial(lora_catalog, root, extensions), index_url=WEIGHT_INDEX_URL)
+    app.on_cleanup.append(site.close)
 
     def guarded(handler):
         @wraps(handler)

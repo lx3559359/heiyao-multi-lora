@@ -115,7 +115,7 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_library_download_rejects_a_changed_pin_before_membership(self):
         site = Site.__new__(Site)
-        site.import_lock = asyncio.Lock()
+        site.import_locks = {}
 
         async def current_release(resource_id):
             return Resource(resource_id, "角色 LoRA", "", "v002", "role.safetensors", 7, "a" * 64)

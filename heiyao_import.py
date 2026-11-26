@@ -11,10 +11,11 @@ from tempfile import NamedTemporaryFile
 from time import monotonic
 from urllib.parse import urlencode, urlsplit
 from uuid import uuid4
+from weakref import WeakValueDictionary
 from zipfile import BadZipFile, ZipFile
 from zlib import error as ZlibError
 
-from aiohttp import ClientError, ClientSession, ClientTimeout
+from aiohttp import ClientError, ClientSession, ClientTimeout, DummyCookieJar
 
 
 SITE = "https://openheiyao.top"
@@ -23,6 +24,7 @@ WEIGHT_INDEX_URL = "https://raw.githubusercontent.com/lx3559359/heiyao-multi-lor
 UUID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
 VERSION = r"(?<![A-Za-z0-9])v\d{1,5}(?!\d)"
 CHUNK_SIZE = 1024 * 1024
+MAX_DOWNLOADS = 2
 ZIP_POLL_INTERVAL = 5
 ZIP_WAIT_LIMIT = 30 * 60
 INDEX_REFRESH_INTERVAL = 60
@@ -232,11 +234,23 @@ class Site:
         # A reserved key with no path means issuance was ambiguous or the file ticket stopped working.
         self.download_tickets = {}
         self.identity = None
+        self._session = None
         self.visitor_lock = asyncio.Lock()
-        self.import_lock = asyncio.Lock()
+        self.import_locks = WeakValueDictionary()
+        self.download_slots = asyncio.Semaphore(MAX_DOWNLOADS)
+        self.ticket_lock = asyncio.Lock()
         self.compare_lock = asyncio.Lock()
         self.local_fingerprints = {}
         self.website_pins = {}
+
+    def http(self):
+        if self._session is None or self._session.closed:
+            self._session = ClientSession(timeout=ClientTimeout(total=18), cookie_jar=DummyCookieJar())
+        return self._session
+
+    async def close(self, _app=None):
+        if self._session is not None:
+            await self._session.close()
 
     async def refresh_index(self):
         if self.index_url is None:
@@ -277,24 +291,23 @@ class Site:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         try:
-            async with ClientSession(timeout=ClientTimeout(total=18)) as session:
-                async with session.request("POST" if post or payload is not None else "GET", SITE + path,
+            async with self.http().request("POST" if post or payload is not None else "GET", SITE + path,
                                            headers=headers, json=payload, allow_redirects=False) as response:
-                    try:
-                        body = await response.json(content_type=None)
-                    except ValueError:
-                        body = {}
-                    if not isinstance(body, dict):
-                        body = {}
-                    if response.status == 204 and path == "/v1/accounts/logout":
-                        return {}
-                    if not 200 <= response.status < 300 or not body:
-                        code = body.get("code")
-                        if not isinstance(code, str) or not re.fullmatch(r"[A-Z_]{1,60}", code):
-                            code = "SITE_RESPONSE_ERROR"
-                        status = response.status if response.status in (400, 401, 403, 404, 409, 429) else 502
-                        raise HeiyaoError(MESSAGES.get(code, f"官网请求失败（{response.status}）"), status, code)
-                    return body
+                try:
+                    body = await response.json(content_type=None)
+                except ValueError:
+                    body = {}
+                if not isinstance(body, dict):
+                    body = {}
+                if response.status == 204 and path == "/v1/accounts/logout":
+                    return {}
+                if not 200 <= response.status < 300 or not body:
+                    code = body.get("code")
+                    if not isinstance(code, str) or not re.fullmatch(r"[A-Z_]{1,60}", code):
+                        code = "SITE_RESPONSE_ERROR"
+                    status = response.status if response.status in (400, 401, 403, 404, 409, 429) else 502
+                    raise HeiyaoError(MESSAGES.get(code, f"官网请求失败（{response.status}）"), status, code)
+                return body
         except (ClientError, asyncio.TimeoutError) as error:
             raise HeiyaoError("暂时无法连接黑曜官网", 502) from error
 
@@ -562,7 +575,8 @@ class Site:
                     endpoint = f"{CATALOG}/{resource.id}/download-files/{bundle_id}/ticket"
                 started = asyncio.get_running_loop().time()
                 while True:
-                    result = await self.json(endpoint, self.account(key[0]), post=True)
+                    async with self.ticket_lock:
+                        result = await self.json(endpoint, self.account(key[0]), post=True)
                     if not bundle_id or result.get("status") != "PREPARING":
                         break
                     await asyncio.sleep(ZIP_POLL_INTERVAL)
@@ -603,7 +617,7 @@ class Site:
 
     async def import_weight(self, resource_id, handle, *, allow_download=False, renew_ticket=False,
                             versioned=False, expected_sha=None):
-        async with self.import_lock:
+        async with self.import_locks.setdefault(resource_id, asyncio.Lock()):
             resource = await self.resource(resource_id)
             if expected_sha is not None and resource.sha256 != expected_sha:
                 raise HeiyaoError("官网权重登记已变化，请重新比对后下载", 409)
@@ -617,17 +631,18 @@ class Site:
                 raise HeiyaoError("本地同名权重已存在，请先核对文件版本", 409)
             self.account(handle)
             key = (handle, resource.id, resource.sha256)
-            try:
-                await self.transfer(key, resource, destination, renew_ticket)
-            except HeiyaoError as error:
-                if error.code != "WEIGHT_RESPONSE_UNAVAILABLE":
-                    raise
-                bundle = await self.bundle(resource)
-                if bundle is None:
-                    raise error
-                bundle_key = (*key, bundle["fileId"])
-                await self.transfer(bundle_key, resource, destination, renew_ticket, bundle)
-                self.download_tickets.pop(key, None)
+            async with self.download_slots:
+                try:
+                    await self.transfer(key, resource, destination, renew_ticket)
+                except HeiyaoError as error:
+                    if error.code != "WEIGHT_RESPONSE_UNAVAILABLE":
+                        raise
+                    bundle = await self.bundle(resource)
+                    if bundle is None:
+                        raise error
+                    bundle_key = (*key, bundle["fileId"])
+                    await self.transfer(bundle_key, resource, destination, renew_ticket, bundle)
+                    self.download_tickets.pop(key, None)
             return destination.relative_to(self.root).as_posix(), resource, False
 
     async def transfer(self, key, resource, destination, renew_ticket, bundle=None):
@@ -651,33 +666,32 @@ class Site:
         # The ZIP listing gives total uncompressed bytes, so allow room for archive headers.
         maximum = bundle["sizeBytes"] + 8 * CHUNK_SIZE if bundle else resource.size
         try:
-            async with ClientSession(timeout=ClientTimeout(total=900, sock_read=50)) as session:
-                async with session.get(SITE + path, headers={"Accept-Encoding": "identity"},
-                                       allow_redirects=False) as response:
-                    if response.status in (401, 403, 410):
-                        raise HeiyaoError("原官网下载票据已不可用，请核对额度后再申请新票据",
-                                          409, "NEW_TICKET_REQUIRED")
-                    encoded = response.headers.get("Content-Encoding", "identity").lower() != "identity"
-                    size = None if encoded else response.content_length
-                    if response.status != 200:
-                        unavailable = response.status in (301, 302, 303, 307, 308, 404, 500, 502, 504)
-                        code = "WEIGHT_RESPONSE_UNAVAILABLE" if not bundle and unavailable else "DOWNLOAD_RESPONSE_ERROR"
-                        raise HeiyaoError(f"官网下载文件返回 HTTP {response.status}", 502, code)
-                    if not bundle and (response.content_type in ("application/zip", "text/html", "application/json")
-                                       or size is not None and size != resource.size):
-                        raise HeiyaoError("官网单文件响应与登记权重不符", 502, "WEIGHT_RESPONSE_UNAVAILABLE")
-                    if bundle and size is not None and size > maximum:
-                        raise HeiyaoError("官网 ZIP 超过下载清单大小", 502)
-                    with NamedTemporaryFile(dir=destination.parent, suffix=".part", delete=False) as file:
-                        pending = Path(file.name)
-                        async for part in response.content.iter_chunked(CHUNK_SIZE):
-                            length += len(part)
-                            if length > maximum:
-                                code = "IMPORT_ERROR" if bundle else "WEIGHT_RESPONSE_UNAVAILABLE"
-                                raise HeiyaoError("官网下载文件超过登记大小", 502, code)
-                            if not bundle:
-                                digest.update(part)
-                            file.write(part)
+            async with self.http().get(SITE + path, headers={"Accept-Encoding": "identity"}, allow_redirects=False,
+                                       timeout=ClientTimeout(total=900, sock_read=50)) as response:
+                if response.status in (401, 403, 410):
+                    raise HeiyaoError("原官网下载票据已不可用，请核对额度后再申请新票据",
+                                      409, "NEW_TICKET_REQUIRED")
+                encoded = response.headers.get("Content-Encoding", "identity").lower() != "identity"
+                size = None if encoded else response.content_length
+                if response.status != 200:
+                    unavailable = response.status in (301, 302, 303, 307, 308, 404, 500, 502, 504)
+                    code = "WEIGHT_RESPONSE_UNAVAILABLE" if not bundle and unavailable else "DOWNLOAD_RESPONSE_ERROR"
+                    raise HeiyaoError(f"官网下载文件返回 HTTP {response.status}", 502, code)
+                if not bundle and (response.content_type in ("application/zip", "text/html", "application/json")
+                                   or size is not None and size != resource.size):
+                    raise HeiyaoError("官网单文件响应与登记权重不符", 502, "WEIGHT_RESPONSE_UNAVAILABLE")
+                if bundle and size is not None and size > maximum:
+                    raise HeiyaoError("官网 ZIP 超过下载清单大小", 502)
+                with NamedTemporaryFile(dir=destination.parent, suffix=".part", delete=False) as file:
+                    pending = Path(file.name)
+                    async for part in response.content.iter_chunked(CHUNK_SIZE):
+                        length += len(part)
+                        if length > maximum:
+                            code = "IMPORT_ERROR" if bundle else "WEIGHT_RESPONSE_UNAVAILABLE"
+                            raise HeiyaoError("官网下载文件超过登记大小", 502, code)
+                        if not bundle:
+                            digest.update(part)
+                        file.write(part)
             verified = digest.hexdigest()
             if bundle:
                 archive, pending = pending, None

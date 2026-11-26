@@ -1,3 +1,4 @@
+import asyncio
 import gzip
 import hashlib
 from io import BytesIO
@@ -15,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from heiyao_import import HeiyaoError, Site
 
 RESOURCE = "7fd546ab-1c65-4772-a56b-511a5c33f908"
+SECOND_RESOURCE = "7fd546ab-1c65-4772-a56b-511a5c33f909"
 FILENAME = "斗破苍穹_蝶_dpdievex.safetensors"
 CHECKPOINT = b"small test checkpoint"
 API = "/v2/curated-resources/" + RESOURCE
@@ -28,10 +30,14 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
         self.root = Path(self.temp.name).resolve()
         data = self.root / "data"
         data.mkdir()
-        (data / "heiyao_verified_weights.json").write_text(json.dumps({RESOURCE: {
+        record = {
             "name": FILENAME, "version": "v001", "bytes": len(CHECKPOINT),
             "sha256": hashlib.sha256(CHECKPOINT).hexdigest(),
-        }}), encoding="utf-8")
+        }
+        second = {**record, "name": "second.safetensors", "sha256": hashlib.sha256(b"second").hexdigest(), "bytes": 6}
+        (data / "heiyao_verified_weights.json").write_text(
+            json.dumps({RESOURCE: record, SECOND_RESOURCE: second}), encoding="utf-8",
+        )
         self.expires = "2099-01-01T00:00:00Z"
         self.ticket_requests = 0
         self.download_body = CHECKPOINT
@@ -43,6 +49,9 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
         self.bundle_requests = 0
         self.bundle_body = b""
         self.bundle_preparations = 0
+        self.transfer_connections = []
+        self.first_started = asyncio.Event()
+        self.release_first = None
         self.site = Site(self.root, data)
         app = web.Application()
 
@@ -51,7 +60,7 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
 
         async def detail(request):
             self.assertEqual(request.headers.get("Authorization"), "Bearer visitor-token")
-            return web.json_response({"id": RESOURCE, "title": "角色 LoRA v001", "tags": ["LoRA"],
+            return web.json_response({"id": request.match_info["id"], "title": "角色 LoRA v001", "tags": ["LoRA"],
                                       "summary": "完整触发提示词：\nOne female character."})
 
         async def login(request):
@@ -66,13 +75,20 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
         async def ticket(request):
             self.assertEqual(request.headers.get("Authorization"), "Bearer account-token")
             self.ticket_requests += 1
+            self.transfer_connections.append(request.transport)
             if self.ticket_status != 200:
                 return web.json_response({"code": self.ticket_error}, status=self.ticket_status)
-            return web.json_response({"downloadPath": API + "/private-download/file?ticket=1." + "x" * 43})
+            return web.json_response({"downloadPath": request.path + "/file?ticket=1." + "x" * 43})
 
         async def download(request):
             self.download_requests += 1
             self.assertNotIn("Authorization", request.headers)
+            self.transfer_connections.append(request.transport)
+            if request.match_info["id"] == SECOND_RESOURCE:
+                return web.Response(body=b"second")
+            if self.release_first:
+                self.first_started.set()
+                await self.release_first.wait()
             return web.Response(body=self.download_body, status=self.download_status, headers=self.download_headers)
 
         async def files(request):
@@ -92,23 +108,53 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
             return web.Response(body=self.bundle_body, content_type="application/zip")
 
         app.router.add_post("/v1/device-sessions/register", guest)
-        app.router.add_get(API, detail)
+        app.router.add_get("/v2/curated-resources/{id}", detail)
         app.router.add_post("/v1/accounts/login", login)
         app.router.add_get("/v1/accounts/download-membership", membership)
-        app.router.add_post(API + "/private-download", ticket)
-        app.router.add_get(API + "/private-download/file", download)
+        app.router.add_post("/v2/curated-resources/{id}/private-download", ticket)
+        app.router.add_get("/v2/curated-resources/{id}/private-download/file", download)
         app.router.add_get(API + "/download-files", files)
         app.router.add_post(BUNDLE + "/ticket", bundle_ticket)
         app.router.add_get(BUNDLE + "/file", bundle_download)
         runner = web.AppRunner(app)
         await runner.setup()
         self.addAsyncCleanup(runner.cleanup)
+        self.addAsyncCleanup(self.site.close)
         listener = web.TCPSite(runner, "127.0.0.1", port=0)
         await listener.start()
         origin = f"http://127.0.0.1:{runner.addresses[0][1]}"
         origin_patch = patch("heiyao_import.SITE", origin)
         origin_patch.start()
         self.addCleanup(origin_patch.stop)
+
+    async def test_direct_download_reuses_the_ticket_connection(self):
+        session = await self.site.login("test-account", "local-test-credential")
+        await self.site.get_weight(RESOURCE, session, allow_download=True)
+        self.assertEqual(len(self.transfer_connections), 2)
+        self.assertIs(*self.transfer_connections)
+
+    async def test_distinct_downloads_overlap_and_duplicate_reuses_the_file(self):
+        self.release_first = asyncio.Event()
+        session = await self.site.login("test-account", "local-test-credential")
+        first = asyncio.create_task(self.site.get_weight(RESOURCE, session, allow_download=True))
+        duplicate = None
+        try:
+            await asyncio.wait_for(self.first_started.wait(), timeout=3)
+            duplicate = asyncio.create_task(self.site.get_weight(RESOURCE, session, allow_download=True))
+            try:
+                second = await asyncio.wait_for(
+                    self.site.get_weight(SECOND_RESOURCE, session, allow_download=True), timeout=3,
+                )
+            except TimeoutError:
+                self.fail("A distinct LoRA could not finish while the first transfer was waiting")
+            self.assertEqual((self.root / second[0]).read_bytes(), b"second")
+            self.assertFalse(duplicate.done())
+        finally:
+            self.release_first.set()
+            await asyncio.gather(*([first, duplicate] if duplicate else [first]), return_exceptions=True)
+        self.assertEqual(first.result()[0], duplicate.result()[0])
+        self.assertTrue(duplicate.result()[2])
+        self.assertEqual(self.ticket_requests, 2)
 
     async def test_only_authorized_download_and_reuse_never_requests_ticket_twice(self):
         with self.assertRaises(HeiyaoError) as missing_login:

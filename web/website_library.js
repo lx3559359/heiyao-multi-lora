@@ -159,7 +159,7 @@ export function openWebsiteLibrary(onDownload) {
     });
     stop.onclick = () => {
         stopRequested = true;
-        status.textContent = "当前文件处理结束后停止。";
+        status.textContent = "已开始的下载处理结束后停止。";
         syncControls();
     };
     dialog.addEventListener("cancel", (event) => {
@@ -180,43 +180,53 @@ export function openWebsiteLibrary(onDownload) {
         downloading = true;
         syncControls();
         const queue = result.missing.filter(({ id }) => selected.has(id));
+        const session = auth.session;
+        const attempted = new Set();
+        const active = new Map();
         let completed = 0;
         let reason = "";
         let failed = 0;
-        for (const [index, item] of queue.entries()) {
-            if (stopRequested) break;
-            if (!selected.has(item.id)) continue;
-            status.textContent = "正在下载和校验 " + (index + 1) + "/" + queue.length + " · " + item.title;
-            errors.delete(item.id);
-            try {
-                const renewTicket = renewals.get(item.id) === true;
-                if (renewTicket) renewals.set(item.id, false);
-                const receipt = await websiteRequest("library/download", {
-                    id: item.id, sha256: item.sha256, session: auth.session, download: true,
-                    renewTicket,
-                });
-                const available = result.missing.filter(({ sha256 }) => sha256 === item.sha256);
-                result.matched_count += available.length;
-                if (!receipt.reused) result.local_count++;
-                result.missing = result.missing.filter(({ sha256 }) => sha256 !== item.sha256);
-                for (const { id } of available) {
-                    selected.delete(id);
-                    errors.delete(id);
-                    renewals.delete(id);
-                }
-                completed++;
-            } catch (error) {
-                failed++;
-                errors.set(item.id, error.message);
-                if (error.code === "NEW_TICKET_REQUIRED") renewals.set(item.id, false);
-                if (statusCodes.has(error.code)) {
-                    reason = error.message;
-                    if (error.code === "LOGIN_REQUIRED") auth.requireLogin();
-                    break;
+
+        async function downloadNext() {
+            while (!stopRequested && !reason) {
+                const item = queue.find(({ id, sha256 }) => selected.has(id) && !attempted.has(id) && !active.has(sha256));
+                if (!item) return;
+                attempted.add(item.id);
+                active.set(item.sha256, item.title);
+                status.textContent = "正在下载和校验 · " + [...active.values()].join("、");
+                errors.delete(item.id);
+                try {
+                    const renewTicket = renewals.get(item.id) === true;
+                    if (renewTicket) renewals.set(item.id, false);
+                    const receipt = await websiteRequest("library/download", {
+                        id: item.id, sha256: item.sha256, session, download: true, renewTicket,
+                    });
+                    const available = result.missing.filter(({ sha256 }) => sha256 === item.sha256);
+                    result.matched_count += available.length;
+                    if (!receipt.reused) result.local_count++;
+                    result.missing = result.missing.filter(({ sha256 }) => sha256 !== item.sha256);
+                    for (const { id } of available) {
+                        selected.delete(id);
+                        errors.delete(id);
+                        renewals.delete(id);
+                    }
+                    completed++;
+                } catch (error) {
+                    failed++;
+                    errors.set(item.id, error.message);
+                    if (error.code === "NEW_TICKET_REQUIRED") renewals.set(item.id, false);
+                    if (statusCodes.has(error.code)) {
+                        reason = error.message;
+                        if (error.code === "LOGIN_REQUIRED") auth.requireLogin();
+                    }
+                } finally {
+                    active.delete(item.sha256);
+                    render();
                 }
             }
-            render();
         }
+
+        await Promise.all([downloadNext(), downloadNext()]);
         if (completed) onDownload();
         render();
         const earlier = Math.max(0, errors.size - failed);
