@@ -24,9 +24,10 @@ async def inspect_slot(site, name, path):
     result = {"current": current, "latest": None, "state": "missing" if path is None else "unknown"}
     if path is None:
         return result
-    result["index_online"] = await site.refresh_index()
+    items, result["index_online"] = await asyncio.gather(site.search(""), site.refresh_index())
+    available_pins = await site.catalog_weights(items)
     size = path.stat().st_size
-    records = list(site.index.items()) + list(site.bundled_index.items())
+    records = list(available_pins.items()) + list(site.index.items()) + list(site.bundled_index.items())
     candidates = [(resource_id, row) for resource_id, row in records if row["bytes"] == size]
     if not candidates:
         return result
@@ -34,7 +35,7 @@ async def inspect_slot(site, name, path):
     matches = [(resource_id, row) for resource_id, row in candidates if row["sha256"] == digest]
     if not matches:
         return result
-    published = {item["id"]: item["title"] for item in await site.search("")}
+    published = {item["id"]: item["title"] for item in items}
     identities = []
     for resource_id, row in matches:
         title = row.get("catalog_title") or published.get(resource_id, row.get("title", ""))
@@ -72,11 +73,11 @@ async def inspect_slot(site, name, path):
         result["state"] = "current"
         return result
 
-    pins = [site.index.get(entry[1]) for entry in newest]
+    pins = [available_pins.get(entry[1]) for entry in newest]
     if len(newest) > 1 and (None in pins or len({pin["sha256"] for pin in pins}) != 1):
         result["state"] = "ambiguous"
         return result
-    pin = site.index.get(latest_id)
+    pin = available_pins.get(latest_id)
     if not pin or pin["version"] != latest_version:
         result["state"] = "unverified"
         return result

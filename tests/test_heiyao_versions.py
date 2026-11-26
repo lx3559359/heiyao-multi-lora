@@ -33,6 +33,9 @@ class FixtureSite:
     async def search(self, query):
         return self.items
 
+    async def catalog_weights(self, items):
+        return self.index
+
     async def detail(self, resource_id):
         assert resource_id == NEW
         return {"local": False, "available": True, "bytes": 9, "prompt": "role, style.", "head_prompt": "Head."}

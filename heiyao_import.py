@@ -23,8 +23,11 @@ WEIGHT_NAME = re.compile(r'[^\\/:*?"<>|\x00-\x1f]+\.safetensors', re.I)
 TOKEN = re.compile(r"[A-Za-z0-9._~-]{1,4096}")
 SEARCH_ALIASES = {"黑曜古风真人": "黑曜真人古风", "古风真人": "真人古风"}
 FULL_SECTION = re.compile(r"^\s*完整触发提示词(?:\s*[\(（【][^\)）】]*[\)）】])?\s*[:：]\s*(.*)$")
-HEAD_SECTION = re.compile(r"^\s*完整头部特征触发词[^:：]*[:：]\s*(.*)$")
+SHORT_SECTION = re.compile(r"^\s*简短触发词(?:\s*[\(（【][^\)）】]*[\)）】])?\s*(?:[:：]\s*(.*))?$")
+HEAD_SECTION = re.compile(r"^\s*完整头部特征触发词(?:[^:：]*[:：]\s*(.*)|\s*(?:[（(【][^）)】]*[）)】])?)$")
 OTHER_SECTION = re.compile(r"^[\u3400-\u9fff][^:：]{0,30}[:：]")
+LIVE_PIN_HEADING = re.compile(r"^\s*官网导入校验\s*[:：]")
+LIVE_PIN_FIELDS = re.compile(r"\s*(v\d{1,5}|官网发布版)\s*\|\s*([1-9]\d{0,17})\s*\|\s*([0-9a-f]{64})\s*\|\s*(.+?)\s*")
 MESSAGES = {
     "ACCOUNT_INVALID_CREDENTIALS": "官网账号或密码不正确",
     "DOWNLOAD_MEMBERSHIP_REQUIRED": "官网账号需要具备此 LoRA 的会员下载权益",
@@ -49,18 +52,24 @@ def lookup_id(value):
     return None
 
 
-def section_prompt(summary, section):
+def section_prompt(summary, section, *, single_line=False):
     lines = summary.splitlines()
     for number, line in enumerate(lines):
         match = section.match(line)
         if not match:
             continue
-        parts = [match[1].strip()] if match[1].strip() else []
+        first = (match[1] or "").strip()
+        if single_line and first:
+            return first
+        parts = [first] if first else []
         for next_line in lines[number + 1:]:
             value = next_line.strip()
-            if OTHER_SECTION.match(value) or (parts and not value):
+            if (OTHER_SECTION.match(value) or SHORT_SECTION.fullmatch(value) or HEAD_SECTION.fullmatch(value)
+                    or (parts and not value)):
                 break
             if value:
+                if single_line or match[1] is None:
+                    return value
                 parts.append(value)
         if parts:
             return "\n".join(parts)
@@ -75,6 +84,9 @@ def full_prompt(summary):
 
 
 def website_prompt(summary):
+    short = section_prompt(summary, SHORT_SECTION, single_line=True)
+    if short:
+        return short
     try:
         return full_prompt(summary)
     except HeiyaoError:
@@ -85,6 +97,20 @@ def website_prompt(summary):
 
 def website_head_prompt(summary):
     return section_prompt(summary, HEAD_SECTION) or website_prompt(summary)
+
+
+def website_weight_pin(title, summary):
+    lines = [LIVE_PIN_HEADING.sub("", line, count=1) for line in summary.splitlines() if LIVE_PIN_HEADING.match(line)]
+    if not lines:
+        return None
+    match = LIVE_PIN_FIELDS.fullmatch(lines[0]) if len(lines) == 1 else None
+    if match is None or not WEIGHT_NAME.fullmatch(match[4]):
+        raise HeiyaoError("官网权重校验信息格式无效", 409)
+    version, size, sha256, name = match.groups()
+    titled_version = re.search(VERSION, title, re.I)
+    if titled_version and titled_version[0].lower() != version:
+        raise HeiyaoError("官网条目版本与已校验的权重登记不一致", 409)
+    return {"title": title, "version": version, "name": name, "bytes": int(size), "sha256": sha256}
 
 
 def membership_view(data):
@@ -180,6 +206,7 @@ class Site:
         self.import_lock = asyncio.Lock()
         self.compare_lock = asyncio.Lock()
         self.local_fingerprints = {}
+        self.website_pins = {}
 
     async def refresh_index(self):
         if self.index_url is None:
@@ -318,7 +345,7 @@ class Site:
             if "://" in query or len(query) > 120 or any(ord(char) < 32 for char in query):
                 raise HeiyaoError("请填写角色名或黑曜官网 LoRA 详情链接")
             items = await self.search_pages(query)
-        results = {item["id"]: {"id": item["id"], "title": item["title"]} for item in items
+        results = {item["id"]: {"id": item["id"], "title": item["title"], "updatedAt": item.get("updatedAt")} for item in items
                    if isinstance(item, dict) and "LoRA" in item.get("tags", [])
                    and isinstance(item.get("id"), str) and re.fullmatch(UUID, item["id"])
                    and isinstance(item.get("title"), str)}
@@ -347,10 +374,10 @@ class Site:
         expected = record.get("title")
         return title == expected if expected else bool(version and version[0].lower() == record["version"])
 
-    def compare_weights(self, items):
+    def compare_weights(self, items, pins):
         verified, unverified = [], []
         for item in items:
-            record = self.index.get(item["id"])
+            record = pins.get(item["id"])
             if record and self.title_matches(record, item["title"]):
                 verified.append((item, record))
             else:
@@ -391,24 +418,55 @@ class Site:
     async def compare_library(self):
         async with self.compare_lock:
             items, _ = await asyncio.gather(self.search(""), self.refresh_index())
-            return await asyncio.to_thread(self.compare_weights, items)
+            pins = await self.catalog_weights(items)
+            return await asyncio.to_thread(self.compare_weights, items, pins)
+
+    async def catalog_weights(self, items):
+        limit = asyncio.Semaphore(6)
+
+        async def update(item):
+            resource_id, title = item["id"], item["title"]
+            revision = item.get("updatedAt")
+            cache = self.website_pins.get(resource_id)
+            if cache and revision and cache[:2] == (revision, title):
+                return resource_id, cache[2]
+            known = self.index.get(resource_id)
+            if cache is None and known and self.title_matches(known, title):
+                return resource_id, known
+            try:
+                async with limit:
+                    detail = await self.read(f"{CATALOG}/{resource_id}")
+                if detail.get("id") == resource_id and detail.get("title") == title and "LoRA" in detail.get("tags", []):
+                    pin = website_weight_pin(title, detail.get("summary") or "")
+                    if pin:
+                        self.website_pins[resource_id] = (revision, title, pin)
+                        return resource_id, pin
+            except HeiyaoError:
+                pass
+            return resource_id, None
+
+        rows = await asyncio.gather(*(update(item) for item in items))
+        return {resource_id: pin for resource_id, pin in rows if pin is not None}
 
     async def resource(self, resource_id):
         if not re.fullmatch(UUID, resource_id):
             raise HeiyaoError("LoRA 资源 ID 格式不正确")
-        record = self.index.get(resource_id)
-        if not record and await self.refresh_index():
-            record = self.index.get(resource_id)
-        if not record:
-            raise HeiyaoError("此条目暂无可核对版本与 SHA-256 的权重登记", 409)
         detail = await self.read(f"{CATALOG}/{resource_id}")
         title = detail.get("title", "")
         if not isinstance(title, str):
             raise HeiyaoError("官网详情没有有效的 LoRA 标题", 502)
-        if (detail.get("id") != resource_id or "LoRA" not in detail.get("tags", [])
-                or not self.title_matches(record, title)):
-            raise HeiyaoError("官网条目版本与已校验的权重登记不一致", 409)
+        if detail.get("id") != resource_id or "LoRA" not in detail.get("tags", []):
+            raise HeiyaoError("官网详情与所选 LoRA 不一致", 409)
         summary = detail.get("summary") or ""
+        record = website_weight_pin(title, summary)
+        if record is None:
+            record = self.index.get(resource_id)
+            if (not record or not self.title_matches(record, title)) and await self.refresh_index():
+                record = self.index.get(resource_id)
+            if not record:
+                raise HeiyaoError("官网还未发布可校验的权重登记", 409)
+            if not self.title_matches(record, title):
+                raise HeiyaoError("官网条目版本与已校验的权重登记不一致", 409)
         prompt = website_prompt(summary)
         name = record["name"]
         if not WEIGHT_NAME.fullmatch(name):

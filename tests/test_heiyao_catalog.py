@@ -99,6 +99,11 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
                         {"id": no_pin, "title": "新 LoRA"}]
 
             site.search = search
+
+            async def read(path):
+                raise HeiyaoError("Test resource has no public weight information", 404)
+
+            site.read = read
             result = await site.compare_library()
             self.assertEqual((result["local_count"], result["website_count"], result["matched_count"]), (2, 3, 1))
             self.assertEqual([entry["id"] for entry in result["missing"]], [STYLE])
