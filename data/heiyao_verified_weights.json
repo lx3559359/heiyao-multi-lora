@@ -55,6 +55,13 @@
     "sha256": "69a008bda14346cf84337ab3e3268b4456d4126b86102781484fb14da09c88d9",
     "version": "v001"
   },
+  "0e682540-ac78-4236-8a23-24a237363886": {
+    "title": "拳皇 XV · 不知火舞 | Krea 2 角色 LoRA v002",
+    "name": "拳皇XV_不知火舞_maikavira_Krea2_v002.safetensors",
+    "version": "v002",
+    "bytes": 228587768,
+    "sha256": "192b515f7a9f1d85f44145971b648318754a205913e33663ae617c2278985b30"
+  },
   "11df15f4-8f7b-4237-81ce-3fd1af4bdf9a": {
     "bytes": 228587760,
     "catalog_title": "斗破苍穹动画|叶欣蓝|Krea 2 LoRA v001|短提示词训练版",
@@ -450,6 +457,13 @@
     "name": "凡人修仙传_元瑶_teryaxy.safetensors",
     "sha256": "7571115f5ea9287db2c8cfc44f1651c772b8c59b71ca00b1f0549bd4c4e85956",
     "version": "v001"
+  },
+  "88a0a254-8242-4656-ba3a-455b26d032a7": {
+    "title": "剑星 · 伊芙 | Krea 2 角色 LoRA v002",
+    "name": "剑星_伊芙_evelunara_Krea2_v002.safetensors",
+    "version": "v002",
+    "bytes": 228587776,
+    "sha256": "2e873856195bd8acf50588e022ae179e5954da5f14bbd96fa36b5f81eca8e7ca"
   },
   "89180a31-9f1a-4738-b4fe-7ccb2cac8005": {
     "bytes": 228587736,
