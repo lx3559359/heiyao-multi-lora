@@ -194,6 +194,10 @@
     font-size: 11px;
 }
 
+.personal-lora select.personal-lora-mode {
+    width: auto;
+}
+
 .personal-lora-toggle,
 .personal-lora-weight {
     display: inline-flex;

@@ -20,6 +20,7 @@ UUID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
 VERSION = r"(?<![A-Za-z0-9])v\d{1,5}(?!\d)"
 TOKEN = re.compile(r"[A-Za-z0-9._~-]{1,4096}")
 FULL_SECTION = re.compile(r"^\s*完整触发提示词(?:\s*[\(（【][^\)）】]*[\)）】])?\s*[:：]\s*(.*)$")
+HEAD_SECTION = re.compile(r"^\s*完整头部特征触发词[^:：]*[:：]\s*(.*)$")
 OTHER_SECTION = re.compile(r"^[\u3400-\u9fff][^:：]{0,30}[:：]")
 MESSAGES = {
     "ACCOUNT_INVALID_CREDENTIALS": "官网账号或密码不正确",
@@ -45,10 +46,10 @@ def lookup_id(value):
     return None
 
 
-def full_prompt(summary):
+def section_prompt(summary, section):
     lines = summary.splitlines()
     for number, line in enumerate(lines):
-        match = FULL_SECTION.match(line)
+        match = section.match(line)
         if not match:
             continue
         parts = [match[1].strip()] if match[1].strip() else []
@@ -60,7 +61,14 @@ def full_prompt(summary):
                 parts.append(value)
         if parts:
             return "\n".join(parts)
-    raise HeiyaoError("官网详情没有可识别的完整触发提示词")
+    return ""
+
+
+def full_prompt(summary):
+    prompt = section_prompt(summary, FULL_SECTION)
+    if not prompt:
+        raise HeiyaoError("官网详情没有可识别的完整触发提示词")
+    return prompt
 
 
 def website_prompt(summary):
@@ -70,6 +78,10 @@ def website_prompt(summary):
         if re.search(r"(?:^|[，,。；;])\s*(?:未记录固定触发词|无需固定触发词)(?:[。.!！]|$)", summary):
             return ""
         raise
+
+
+def website_head_prompt(summary):
+    return section_prompt(summary, HEAD_SECTION) or website_prompt(summary)
 
 
 def membership_view(data):
@@ -102,6 +114,7 @@ class Resource:
     name: str
     size: int
     sha256: str
+    head_prompt: str = ""
 
     def destination(self, root):
         return root / "黑曜官网" / self.id / self.name
@@ -279,11 +292,13 @@ class Site:
                 or re.search(VERSION, title, re.I) is None
                 or re.search(VERSION, title, re.I)[0].lower() != record["version"]):
             raise HeiyaoError("官网条目版本与已校验的权重登记不一致", 409)
-        prompt = website_prompt(detail.get("summary") or "")
+        summary = detail.get("summary") or ""
+        prompt = website_prompt(summary)
         name = record["name"]
         if not re.fullmatch(r'[^\\/:*?"<>|\x00-\x1f]+\.safetensors', name, re.I):
             raise HeiyaoError("权重文件名无效", 409)
-        return Resource(resource_id, title, prompt, record["version"], name, record["bytes"], record["sha256"])
+        return Resource(resource_id, title, prompt, record["version"], name, record["bytes"], record["sha256"],
+                        website_head_prompt(summary))
 
     async def detail(self, resource_id):
         resource = await self.resource(resource_id)
@@ -292,7 +307,7 @@ class Site:
         if not existing:
             available = (await self.read(f"{CATALOG}/{resource_id}/private-download/status")).get("available") is True
         return {"title": resource.title, "version": resource.version, "prompt": resource.prompt,
-                "bytes": resource.size, "local": bool(existing), "available": available}
+                "head_prompt": resource.head_prompt, "bytes": resource.size, "local": bool(existing), "available": available}
 
     def account(self, handle):
         account = self.accounts.get(handle) if isinstance(handle, str) else None
@@ -329,11 +344,17 @@ class Site:
         return path
 
     async def get_weight(self, resource_id, handle, *, allow_download=False, renew_ticket=False):
+        name, resource, reused = await self.import_weight(
+            resource_id, handle, allow_download=allow_download, renew_ticket=renew_ticket,
+        )
+        return name, resource.prompt, reused
+
+    async def import_weight(self, resource_id, handle, *, allow_download=False, renew_ticket=False):
         async with self.import_lock:
             resource = await self.resource(resource_id)
             existing = await asyncio.to_thread(matching_weight, self.root, resource)
             if existing:
-                return existing.relative_to(self.root).as_posix(), resource.prompt, True
+                return existing.relative_to(self.root).as_posix(), resource, True
             if not allow_download:
                 raise HeiyaoError("本地同版权重已不可用，请重新选择版本并确认下载", 409)
             destination = resource.destination(self.root)
@@ -351,7 +372,7 @@ class Site:
                     self.download_tickets[key] = None
                 raise
             self.download_tickets.pop(key, None)
-            return destination.relative_to(self.root).as_posix(), resource.prompt, False
+            return destination.relative_to(self.root).as_posix(), resource, False
 
     async def download(self, path, resource, destination):
         destination.parent.mkdir(parents=True, exist_ok=True)

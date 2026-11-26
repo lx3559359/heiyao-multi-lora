@@ -23,7 +23,7 @@ def assert_loopback(request):
     raise HeiyaoError("请从本机 localhost 或 127.0.0.1 打开 ComfyUI 使用官网导入", 403)
 
 
-def register_website_routes(routes, package, state, library, folder_paths):
+def register_website_routes(routes, package, state, library, head_library, folder_paths):
     root = lora_root(folder_paths)
     if root is None:
         return False
@@ -84,15 +84,17 @@ def register_website_routes(routes, package, state, library, folder_paths):
         resource_id = data.get("id")
         if not isinstance(resource_id, str):
             raise HeiyaoError("请选择官网 LoRA")
-        name, prompt, reused = await site.get_weight(
+        name, resource, reused = await site.import_weight(
             resource_id, data.get("session"), allow_download=data.get("download") is True,
             renew_ticket=data.get("renewTicket") is True,
         )
         mapped = folder_paths.get_full_path("loras", name)
         if not mapped or Path(mapped).resolve() != (root / name).resolve():
             raise HeiyaoError("ComfyUI 还未从主 LoRA 目录加载该权重", 409)
-        if prompt:
-            library.remember_import(name, prompt)
-        return {"name": name, "prompt": prompt, "reused": reused}
+        if resource.prompt:
+            library.remember_import(name, resource.prompt)
+        if resource.head_prompt:
+            head_library.remember_import(name, resource.head_prompt)
+        return {"name": name, "prompt": resource.prompt, "head_prompt": resource.head_prompt, "reused": reused}
 
     return True

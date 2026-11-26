@@ -4,6 +4,7 @@ import { openWebsiteImport } from "./website_import.js";
 
 const blankRow = (inject) => ({
     name: "", enabled: false, strength: 0.9, inject, overrides: {},
+    prompt_mode: "short", head_overrides: {},
 });
 
 function parseRows(value) {
@@ -42,13 +43,21 @@ async function request(path, method = "GET", body) {
     return response.json();
 }
 
-function importPrompt(source) {
-    const lines = source.replace(/^\uFEFF/, "").split(/\r?\n/);
-    const section = lines.findIndex((line) => /^\s*完整触发提示词[^：:]*[：:]/.test(line));
+function importPrompt(source, mode) {
+    const lines = source.replace(/^\uFEFF/, "").split(/\r?\n|[\u2028\u2029]/);
+    const shortHeader = /^\s*(?:简短触发词|完整触发提示词)[^：:]*[：:]\s*/;
+    const headHeader = /^\s*完整头部特征触发词[^：:]*[：:]\s*/;
+    const preferred = mode === "head" ? headHeader : shortHeader;
+    let header = preferred;
+    let section = lines.findIndex((line) => header.test(line));
+    if (section === -1 && mode === "head") {
+        header = shortHeader;
+        section = lines.findIndex((line) => header.test(line));
+    }
     if (section === -1) return source.trim();
-    const content = [lines[section].replace(/^\s*完整触发提示词[^：:]*[：:]\s*/, "")];
+    const content = [lines[section].replace(header, "")];
     for (const line of lines.slice(section + 1)) {
-        if (/^\s*(?:目标造型|原服参考|英文示例|造型|实测|云端训练|最终权重|注意)[^：:]*[：:]/.test(line)) break;
+        if (/^\s*[\u3400-\u9fff][^：:]{0,30}[：:]/.test(line)) break;
         if (!line.trim() && content.some((part) => part.trim())) break;
         content.push(line);
     }
@@ -56,15 +65,19 @@ function importPrompt(source) {
 }
 
 async function editTrigger(row, refresh, changed) {
-    const { defaults } = await refresh();
+    const { defaults, head_defaults: heads = {} } = await refresh();
     const name = row.name;
+    const mode = row.prompt_mode;
+    const head = mode === "head";
+    const overrides = head ? row.head_overrides : row.overrides;
+    const label = head ? "头部特征触发词" : "简短触发词";
     const dialog = element("dialog", "编辑 LoRA 触发提示词");
     dialog.className = "personal-lora-dialog";
     const form = element("form");
     form.method = "dialog";
-    const heading = element("strong", "", name);
-    const field = element("textarea", "完整触发提示词");
-    field.value = row.overrides[name] ?? defaults[name] ?? "";
+    const heading = element("strong", "", label + " · " + name);
+    const field = element("textarea", label);
+    field.value = overrides[name] ?? (head ? heads[name] : undefined) ?? defaults[name] ?? "";
     const buttons = element("nav");
     const message = element("output");
     const file = element("input", "选择 TXT");
@@ -73,7 +86,7 @@ async function editTrigger(row, refresh, changed) {
     file.hidden = true;
     file.onchange = async () => {
         try {
-            if (file.files[0]) field.value = importPrompt(await file.files[0].text());
+            if (file.files[0]) field.value = importPrompt(await file.files[0].text(), mode);
         } catch (error) {
             message.textContent = error.message;
         }
@@ -89,12 +102,12 @@ async function editTrigger(row, refresh, changed) {
     buttons.append(
         button("导入 TXT", () => file.click()),
         button("仅保存到工作流", () => {
-            row.overrides[name] = field.value.trim();
+            overrides[name] = field.value.trim();
             changed();
             dialog.close();
         }),
-        button("恢复该 LoRA 的默认值", () => {
-            delete row.overrides[name];
+        button("恢复本档默认值", () => {
+            delete overrides[name];
             changed();
             dialog.close();
         }),
@@ -102,8 +115,8 @@ async function editTrigger(row, refresh, changed) {
     const save = button("保存为 LoRA 默认", async () => {
         save.disabled = true;
         try {
-            await request("default", "PUT", { name, prompt: field.value });
-            delete row.overrides[name];
+            await request("default", "PUT", { name, prompt: field.value, mode });
+            delete overrides[name];
             changed();
             changes.dispatchEvent(new Event("catalog"));
             dialog.close();
@@ -227,6 +240,9 @@ function addSlots(node, name, inputData) {
 
         const enabled = checkbox("启用", "启用槽位 " + number);
         const inject = checkbox("带词", "为槽位 " + number + " 自动带词");
+        const mode = element("select", "槽位 " + number + " 的触发词档位");
+        mode.className = "personal-lora-mode";
+        mode.append(new Option("简短", "short"), new Option("头部", "head"));
         const weight = element("input", "槽位 " + number + " 的权重");
         weight.type = "number";
         weight.min = -100;
@@ -241,12 +257,14 @@ function addSlots(node, name, inputData) {
         edit.className = "personal-lora-edit";
         const actions = element("div");
         actions.className = "personal-lora-actions";
-        actions.append(enabled.control, inject.control, weightControl, edit);
+        actions.append(enabled.control, inject.control, mode, weightControl, edit);
         card.append(label, select, actions, remove);
 
         function updateCard() {
             enabled.input.checked = row.enabled;
             inject.input.checked = row.inject;
+            mode.value = row.prompt_mode;
+            mode.disabled = !row.name;
             weight.value = row.strength;
             edit.disabled = !row.name;
             card.classList.toggle("is-enabled", Boolean(row.name && row.enabled && row.strength));
@@ -267,6 +285,10 @@ function addSlots(node, name, inputData) {
         };
         inject.input.onchange = () => {
             row.inject = inject.input.checked;
+            changed();
+        };
+        mode.onchange = () => {
+            row.prompt_mode = mode.value;
             changed();
         };
         weight.oninput = () => {
@@ -316,10 +338,9 @@ function addSlots(node, name, inputData) {
         return catalog;
     }
 
-    website.onclick = () => openWebsiteImport(({name: filename, prompt: text}) => {
+    website.onclick = () => openWebsiteImport(({name: filename, prompt: text, head_prompt: head, prompt_mode: mode}) => {
         editStack(() => rows.push({
-            ...blankRow(Boolean(text)), name: filename, enabled: true,
-            overrides: text ? { [filename]: text } : {},
+            ...blankRow(Boolean(text || head)), name: filename, enabled: true, prompt_mode: mode,
         }));
         reload();
     }, catalog.website_membership === true);

@@ -15,8 +15,11 @@ from .prompt_stack import Library, compose, decode_slots, lora_key, text_field
 PACKAGE = Path(__file__).resolve().parent
 with (PACKAGE / "data" / "examples.json").open(encoding="utf-8") as source:
     EXAMPLES = json.load(source)
+with (PACKAGE / "data" / "heads.json").open(encoding="utf-8") as source:
+    HEAD_EXAMPLES = json.load(source)
 STATE = prepare_state(PACKAGE, folder_paths)
 LIBRARY = Library(STATE / "triggers.json", EXAMPLES)
+HEAD_LIBRARY = Library(STATE / "head_triggers.json", HEAD_EXAMPLES)
 NODE_ID = "PersonalLoRALoader"
 
 
@@ -40,15 +43,14 @@ class PersonalLoRALoader:
     RETURN_NAMES = ("model", "clip", "positive_prompt")
     FUNCTION = "apply"
     CATEGORY = "loaders"
-    DESCRIPTION = "按槽位加载 LoRA，并把各个启用的完整触发提示词加到场景文字前面。"
+    DESCRIPTION = "按槽位加载 LoRA，并把选中的简短或头部特征触发提示词加到场景文字前面。"
 
     @classmethod
     def IS_CHANGED(cls, **_):
-        return json.dumps(LIBRARY.read(), sort_keys=True, ensure_ascii=False)
+        return json.dumps((LIBRARY.read(), HEAD_LIBRARY.read()), sort_keys=True, ensure_ascii=False)
 
     def apply(self, model, scene_prompt, slots, clip=None):
         rows = decode_slots(slots)
-        defaults = LIBRARY.read()
         names = catalog()
         loader = LoraLoader()
         for index, row in enumerate(rows, 1):
@@ -58,17 +60,18 @@ class PersonalLoRALoader:
                 raise ValueError(f"第 {index} 槽找不到 LoRA：{row.name}")
             clip_strength = row.strength if clip is not None else 0.0
             model, clip = loader.load_lora(model, clip, names[row.name], row.strength, clip_strength)
-        text = compose(rows, scene_prompt, defaults)
+        text = compose(rows, scene_prompt, LIBRARY.read(), HEAD_LIBRARY.read())
         return {"ui": {"positive_prompt": [text]}, "result": (model, clip, text)}
 
 
 routes = PromptServer.instance.routes
-WEBSITE_IMPORT = register_website_routes(routes, PACKAGE, STATE, LIBRARY, folder_paths)
+WEBSITE_IMPORT = register_website_routes(routes, PACKAGE, STATE, LIBRARY, HEAD_LIBRARY, folder_paths)
 
 
 @routes.get("/personal-lora/catalog")
 async def get_catalog(request):
-    return web.json_response({"loras": list(catalog()), "defaults": LIBRARY.read(), "dynamic_slots": True, "website_import": WEBSITE_IMPORT,
+    return web.json_response({"loras": list(catalog()), "defaults": LIBRARY.read(),
+                              "head_defaults": HEAD_LIBRARY.read(), "dynamic_slots": True, "website_import": WEBSITE_IMPORT,
                               "website_membership": WEBSITE_IMPORT})
 
 
@@ -81,7 +84,12 @@ async def set_default(request):
         name = lora_key(body["name"])
         if name not in catalog():
             raise ValueError("LoRA 已不在本机模型列表里")
-        return web.json_response({"defaults": LIBRARY.save(name, body["prompt"])})
+        mode = body.get("mode", "short")
+        if mode not in ("short", "head"):
+            raise ValueError("触发词档位无效")
+        library = HEAD_LIBRARY if mode == "head" else LIBRARY
+        library.save(name, body["prompt"])
+        return web.json_response({"defaults": LIBRARY.read(), "head_defaults": HEAD_LIBRARY.read()})
     except (KeyError, TypeError, ValueError) as error:
         raise web.HTTPBadRequest(text=str(error)) from error
 
@@ -94,7 +102,7 @@ async def preview(request):
         scene = text_field(body["scene"])
     except (KeyError, TypeError, ValueError) as error:
         raise web.HTTPBadRequest(text=str(error)) from error
-    return web.json_response({"positive_prompt": compose(rows, scene, LIBRARY.read())})
+    return web.json_response({"positive_prompt": compose(rows, scene, LIBRARY.read(), HEAD_LIBRARY.read())})
 
 
 NODE_CLASS_MAPPINGS = {NODE_ID: PersonalLoRALoader}

@@ -36,8 +36,11 @@ export function openWebsiteImport(onImport, showMembership = false) {
 
     const role = make("select", "", { hidden: true });
     role.setAttribute("aria-label", "选择官网角色 LoRA");
+    const mode = make("select", "", { hidden: true });
+    mode.setAttribute("aria-label", "官网触发词档位");
+    mode.append(new Option("简短触发词", "short"), new Option("完整头部特征触发词", "head"));
     const prompt = make("textarea", "", { readOnly: true, hidden: true });
-    prompt.setAttribute("aria-label", "官网完整触发提示词");
+    prompt.setAttribute("aria-label", "官网触发提示词预览");
     const quota = make("p", "", { className: "personal-lora-quota", hidden: true });
     quota.setAttribute("aria-live", "polite");
     const status = make("output");
@@ -56,7 +59,7 @@ export function openWebsiteImport(onImport, showMembership = false) {
     const logout = make("button", "退出官网登录", { type: "button", hidden: !websiteSession });
     const close = make("button", "关闭");
     controls.append(importButton, logout, close);
-    form.append(heading, searchLine, role, prompt, account, quota, status, controls);
+    form.append(heading, searchLine, role, mode, prompt, account, quota, status, controls);
     dialog.append(form);
     document.body.append(dialog);
     dialog.showModal();
@@ -107,14 +110,21 @@ export function openWebsiteImport(onImport, showMembership = false) {
         }
     }
 
+    mode.onchange = () => {
+        prompt.value = (mode.value === "head" ? activeDetail?.head_prompt : activeDetail?.prompt) ?? "";
+    };
+
     async function showRole() {
         activeDetail = undefined;
         renewTicket = false;
         prompt.hidden = true;
+        mode.hidden = true;
         account.hidden = true;
         if (!role.value) return;
         status.textContent = "正在核对官网版本和本地权重…";
         activeDetail = await websiteRequest("role/" + encodeURIComponent(role.value));
+        mode.value = "short";
+        mode.hidden = !activeDetail.head_prompt || activeDetail.head_prompt === activeDetail.prompt;
         prompt.value = activeDetail.prompt;
         prompt.hidden = !activeDetail.prompt;
         importButton.textContent = activeDetail.local ? "导入到新槽位" : "下载并导入";
@@ -133,6 +143,7 @@ export function openWebsiteImport(onImport, showMembership = false) {
         activeDetail = undefined;
         renewTicket = false;
         prompt.hidden = true;
+        mode.hidden = true;
         account.hidden = true;
         role.hidden = true;
         status.textContent = "正在搜索官网 LoRA…";
@@ -182,7 +193,7 @@ export function openWebsiteImport(onImport, showMembership = false) {
             id: role.value, session: websiteSession, download: !activeDetail.local, renewTicket: replace,
         });
         if (dialog.open) {
-            onImport(result);
+            onImport({ ...result, prompt_mode: mode.value });
             dialog.close();
         }
     });

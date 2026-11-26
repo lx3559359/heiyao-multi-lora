@@ -1,7 +1,7 @@
 [project]
 name = "heiyao-multi-lora"
-version = "1.0.0"
-description = "由黑曜资源提供的多 LoRA 加载器，支持自定义槽位、完整触发词和官网版本导入。"
+version = "1.1.0"
+description = "由黑曜资源提供的多 LoRA 加载器，支持自定义槽位、简短和头部特征两档触发词，以及官网版本导入。"
 requires-python = ">=3.11"
 dependencies = []
 

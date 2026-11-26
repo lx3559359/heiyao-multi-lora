@@ -1,5 +1,5 @@
 """Prompt composition and persistent defaults for Personal LoRA Loader."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import math
 from pathlib import Path
@@ -31,12 +31,16 @@ class Slot:
     strength: float
     inject: bool
     overrides: dict
+    prompt_mode: str = "short"
+    head_overrides: dict = field(default_factory=dict)
 
     @property
     def active(self):
         return bool(self.name and self.enabled and self.strength != 0)
 
-    def trigger(self, defaults):
+    def trigger(self, defaults, head_defaults):
+        if self.prompt_mode == "head":
+            return self.head_overrides.get(self.name, head_defaults.get(self.name, defaults.get(self.name, "")))
         return self.overrides.get(self.name, defaults.get(self.name, ""))
 
 
@@ -57,21 +61,27 @@ def decode_slots(payload):
         if type(enabled) is not bool or type(inject) is not bool:
             raise ValueError(f"第 {index + 1} 槽的开关必须是布尔值")
         overrides = row.get("overrides", {})
-        if not isinstance(overrides, dict):
+        head_overrides = row.get("head_overrides", {})
+        if not isinstance(overrides, dict) or not isinstance(head_overrides, dict):
             raise ValueError(f"第 {index + 1} 槽的工作流触发词必须是 JSON 对象")
+        mode = row.get("prompt_mode", "short")
+        if mode not in ("short", "head"):
+            raise ValueError(f"第 {index + 1} 槽的触发词档位无效")
         slots.append(Slot(
             lora_key(row.get("name", "")), enabled, strength, inject,
             {lora_key(key): text_field(value) for key, value in overrides.items()},
+            mode, {lora_key(key): text_field(value) for key, value in head_overrides.items()},
         ))
     return slots
 
 
-def compose(slots, scene, defaults):
+def compose(slots, scene, defaults, head_defaults=None):
     scene = scene.strip()
     sections = {}
+    head_defaults = head_defaults or {}
     for slot in slots:
         if slot.active and slot.inject:
-            trigger = slot.trigger(defaults).strip()
+            trigger = slot.trigger(defaults, head_defaults).strip()
             if trigger:
                 sections[trigger] = None
     if scene:
