@@ -127,6 +127,8 @@ export function openWebsiteLibrary(onDownload) {
         const fresh = await websiteRequest("library");
         const missingIds = new Set(fresh.missing.map(({ id }) => id));
         for (const id of selected) if (!missingIds.has(id)) selected.delete(id);
+        for (const id of errors.keys()) if (!renewals.has(id) || !missingIds.has(id)) errors.delete(id);
+        for (const id of renewals.keys()) if (!missingIds.has(id)) renewals.delete(id);
         result = fresh;
         render();
         status.textContent = fresh.missing.length ? "勾选要下载的 LoRA，通过官网账号核销下载额度。"
@@ -184,7 +186,7 @@ export function openWebsiteLibrary(onDownload) {
         for (const [index, item] of queue.entries()) {
             if (stopRequested) break;
             if (!selected.has(item.id)) continue;
-            status.textContent = "正在处理 " + (index + 1) + "/" + queue.length + " · " + item.title;
+            status.textContent = "正在下载和校验 " + (index + 1) + "/" + queue.length + " · " + item.title;
             errors.delete(item.id);
             try {
                 const renewTicket = renewals.get(item.id) === true;
@@ -199,6 +201,7 @@ export function openWebsiteLibrary(onDownload) {
                 result.missing = result.missing.filter(({ sha256 }) => sha256 !== item.sha256);
                 for (const { id } of available) {
                     selected.delete(id);
+                    errors.delete(id);
                     renewals.delete(id);
                 }
                 completed++;
@@ -206,7 +209,7 @@ export function openWebsiteLibrary(onDownload) {
                 failed++;
                 errors.set(item.id, error.message);
                 if (error.code === "NEW_TICKET_REQUIRED") renewals.set(item.id, false);
-                if (statusCodes.has(error.code) || error.code === "NEW_TICKET_REQUIRED") {
+                if (statusCodes.has(error.code)) {
                     reason = error.message;
                     if (error.code === "LOGIN_REQUIRED") auth.requireLogin();
                     break;
@@ -216,7 +219,9 @@ export function openWebsiteLibrary(onDownload) {
         }
         if (completed) onDownload();
         render();
+        const earlier = Math.max(0, errors.size - failed);
         status.textContent = "本次完成 " + completed + " 项 · 失败 " + failed + " 项" +
+            (earlier ? " · 此前失败待重试 " + earlier + " 项" : "") +
             (stopRequested ? " · 已停止后续下载" : "") + (reason ? " · " + reason : "");
         await auth.refreshQuota();
     });

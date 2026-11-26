@@ -1,10 +1,13 @@
+import gzip
 import hashlib
+from io import BytesIO
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 from aiohttp import web
 
@@ -15,6 +18,7 @@ RESOURCE = "7fd546ab-1c65-4772-a56b-511a5c33f908"
 FILENAME = "斗破苍穹_蝶_dpdievex.safetensors"
 CHECKPOINT = b"small test checkpoint"
 API = "/v2/curated-resources/" + RESOURCE
+BUNDLE = API + "/download-files/00000000-0000-4000-8000-000000000000"
 
 
 class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
@@ -31,10 +35,14 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
         self.expires = "2099-01-01T00:00:00Z"
         self.ticket_requests = 0
         self.download_body = CHECKPOINT
+        self.download_headers = {}
         self.download_status = 200
         self.ticket_status = 200
         self.ticket_error = "SITE_BUSY"
         self.download_requests = 0
+        self.bundle_requests = 0
+        self.bundle_body = b""
+        self.bundle_preparations = 0
         self.site = Site(self.root, data)
         app = web.Application()
 
@@ -65,7 +73,23 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
         async def download(request):
             self.download_requests += 1
             self.assertNotIn("Authorization", request.headers)
-            return web.Response(body=self.download_body, status=self.download_status)
+            return web.Response(body=self.download_body, status=self.download_status, headers=self.download_headers)
+
+        async def files(request):
+            return web.json_response({"files": [], "groups": [], "bundle": {
+                "fileId": BUNDLE.rsplit("/", 1)[-1], "purpose": "download_package", "access": "membership",
+                "displayName": "release.zip", "sizeBytes": len(self.bundle_body), "downloadAvailable": bool(self.bundle_body),
+            }})
+
+        async def bundle_ticket(request):
+            self.assertEqual(request.headers.get("Authorization"), "Bearer account-token")
+            self.bundle_requests += 1
+            if self.bundle_requests <= self.bundle_preparations:
+                return web.json_response({"status": "PREPARING"}, status=202)
+            return web.json_response({"downloadPath": BUNDLE + "/file?ticket=1." + "a" * 43})
+
+        async def bundle_download(request):
+            return web.Response(body=self.bundle_body, content_type="application/zip")
 
         app.router.add_post("/v1/device-sessions/register", guest)
         app.router.add_get(API, detail)
@@ -73,6 +97,9 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
         app.router.add_get("/v1/accounts/download-membership", membership)
         app.router.add_post(API + "/private-download", ticket)
         app.router.add_get(API + "/private-download/file", download)
+        app.router.add_get(API + "/download-files", files)
+        app.router.add_post(BUNDLE + "/ticket", bundle_ticket)
+        app.router.add_get(BUNDLE + "/file", bundle_download)
         runner = web.AppRunner(app)
         await runner.setup()
         self.addAsyncCleanup(runner.cleanup)
@@ -131,6 +158,46 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HeiyaoError) as error:
             await self.site.get_weight(RESOURCE, session, allow_download=True)
         self.assertIn("SHA-256", str(error.exception))
+        self.assertEqual(list(self.root.rglob("*.safetensors")), [])
+        self.assertEqual(list(self.root.rglob("*.part")), [])
+
+    async def test_compressed_response_uses_decoded_weight_size(self):
+        self.download_body = gzip.compress(CHECKPOINT)
+        self.download_headers = {"Content-Encoding": "gzip"}
+        session = await self.site.login("test-account", "local-test-credential")
+        name, _, reused = await self.site.get_weight(RESOURCE, session, allow_download=True)
+        self.assertFalse(reused)
+        self.assertEqual((self.root / name).read_bytes(), CHECKPOINT)
+        self.assertEqual(self.ticket_requests, 1)
+        self.assertEqual(self.bundle_requests, 0)
+
+    async def test_unavailable_weight_uses_official_zip_and_installs_only_pinned_member(self):
+        self.download_status = 502
+        self.bundle_preparations = 1
+        archive = BytesIO()
+        with ZipFile(archive, "w") as bundle:
+            bundle.writestr("release/" + FILENAME, CHECKPOINT)
+            bundle.writestr("说明.txt", "Example attachment")
+        self.bundle_body = archive.getvalue()
+        session = await self.site.login("test-account", "local-test-credential")
+        with patch("heiyao_import.ZIP_POLL_INTERVAL", 0):
+            name, _, reused = await self.site.get_weight(RESOURCE, session, allow_download=True)
+        self.assertFalse(reused)
+        self.assertEqual((self.root / name).read_bytes(), CHECKPOINT)
+        self.assertEqual(self.bundle_requests, 2)
+        self.assertEqual(list(self.root.rglob("*.zip")), [])
+        self.assertEqual(list(self.root.rglob("说明.txt")), [])
+        self.assertEqual(list(self.root.rglob("*.part")), [])
+
+    async def test_official_zip_with_same_name_and_size_but_wrong_sha_is_rejected(self):
+        self.download_status = 502
+        archive = BytesIO()
+        with ZipFile(archive, "w") as bundle:
+            bundle.writestr(FILENAME, b"X" * len(CHECKPOINT))
+        self.bundle_body = archive.getvalue()
+        session = await self.site.login("test-account", "local-test-credential")
+        with self.assertRaisesRegex(HeiyaoError, "SHA-256"):
+            await self.site.get_weight(RESOURCE, session, allow_download=True)
         self.assertEqual(list(self.root.rglob("*.safetensors")), [])
         self.assertEqual(list(self.root.rglob("*.part")), [])
 
