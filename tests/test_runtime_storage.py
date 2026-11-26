@@ -31,9 +31,27 @@ class UpdateStorageTests(unittest.TestCase):
             self.assertEqual(prepare_state(package, paths), state)
             self.assertEqual(triggers.read_text(encoding="utf-8"), '{"old": "Edited after install."}')
 
-    def test_website_download_targets_default_registered_comfy_lora_path(self):
+    def test_main_model_root_wins_even_when_an_extra_directory_is_first(self):
         base = pathlib.Path.cwd() / "temp" / "manager-models"
         custom_root = base / "loras"
-        paths = SimpleNamespace(get_folder_paths=lambda kind: [str(custom_root), str(base / "other")])
+        paths = SimpleNamespace(models_dir=str(base), get_folder_paths=lambda kind: [str(base / "other"), str(custom_root)])
         self.assertEqual(lora_root(paths), custom_root.resolve())
-        self.assertIsNone(lora_root(SimpleNamespace(get_folder_paths=lambda kind: [])))
+        self.assertIsNone(lora_root(SimpleNamespace()))
+
+    def test_only_files_inside_the_main_lora_root_are_available(self):
+        from runtime_storage import lora_catalog, resolve_lora
+
+        with tempfile.TemporaryDirectory(dir=pathlib.Path.cwd() / "temp") as directory:
+            base = pathlib.Path(directory).resolve()
+            root = base / "models" / "loras"
+            (root / "Characters").mkdir(parents=True)
+            other = base / "external"
+            other.mkdir()
+            weight = root / "Characters" / "role.safetensors"
+            weight.write_bytes(b"main weight")
+            (root / "notes.txt").write_text("notes", encoding="utf-8")
+            (other / "role.safetensors").write_bytes(b"external weight")
+            extensions = {".safetensors"}
+            self.assertEqual(lora_catalog(root, extensions), {"Characters/role.safetensors": weight})
+            self.assertEqual(resolve_lora(root, "Characters/role.safetensors", extensions), weight)
+            self.assertIsNone(resolve_lora(root, "../../external/role.safetensors", extensions))

@@ -47,25 +47,17 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
     def test_style_without_fixed_trigger(self):
         self.assertEqual(website_prompt("Krea 2 风格 LoRA,无固定触发词。示例。"), "")
 
-    async def test_style_with_verified_title_and_weight_in_extra_model_directory(self):
-        from heiyao_import import matching_comfy_weight
-
+    async def test_style_with_verified_title_and_weight_in_models_subdirectory(self):
         with tempfile.TemporaryDirectory(dir=Path.cwd() / "temp") as directory:
             model = Path(directory) / "style.safetensors"
             model.write_bytes(b"verified style")
-            name = "extra/style.safetensors"
-
-            class FolderPaths:
-                def get_filename_list(self, category):
-                    return [name]
-
-                def get_full_path(self, category, key):
-                    return model if key == name else None
+            name = "Styles/style.safetensors"
 
             record = {"title": "风格 LoRA", "version": "官网发布版", "name": model.name,
                       "bytes": model.stat().st_size, "sha256": hashlib.sha256(model.read_bytes()).hexdigest()}
             site = Site.__new__(Site)
             site.index = {STYLE: record}
+            site.local_loras = lambda: {name: model}
 
             async def read(path):
                 return {"id": STYLE, "title": record["title"], "tags": ["LoRA"], "summary": "无固定触发词。"}
@@ -73,6 +65,6 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
             site.read = read
             resource = await site.resource(STYLE)
             self.assertEqual(resource.prompt, "")
-            self.assertEqual(matching_comfy_weight(FolderPaths(), resource), name)
+            self.assertEqual(site.local_weight(resource), name)
             model.write_bytes(b"other contents")
-            self.assertIsNone(matching_comfy_weight(FolderPaths(), resource))
+            self.assertIsNone(site.local_weight(resource))

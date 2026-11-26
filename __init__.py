@@ -1,14 +1,16 @@
 """ComfyUI entry point for the Personal LoRA Loader."""
+from inspect import signature
 import json
 from pathlib import Path
 
 from aiohttp import web
+import comfy.sd
+import comfy.utils
 import folder_paths
-from nodes import LoraLoader
 from server import PromptServer
 
 from .heiyao_routes import register_website_routes
-from .runtime_storage import prepare_state
+from .runtime_storage import lora_catalog, lora_root, prepare_state, resolve_lora
 from .prompt_stack import Library, compose, decode_slots, lora_key, text_field
 
 
@@ -21,10 +23,14 @@ STATE = prepare_state(PACKAGE, folder_paths)
 LIBRARY = Library(STATE / "triggers.json", EXAMPLES)
 HEAD_LIBRARY = Library(STATE / "head_triggers.json", HEAD_EXAMPLES)
 NODE_ID = "PersonalLoRALoader"
+LORA_ROOT = lora_root(folder_paths)
+LORA_EXTENSIONS = folder_paths.supported_pt_extensions
+LORA_METADATA = ("return_metadata" in signature(comfy.utils.load_torch_file).parameters
+                 and "lora_metadata" in signature(comfy.sd.load_lora_for_models).parameters)
 
 
 def catalog():
-    return {lora_key(filename): filename for filename in folder_paths.get_filename_list("loras")}
+    return lora_catalog(LORA_ROOT, LORA_EXTENSIONS)
 
 
 class PersonalLoRALoader:
@@ -51,21 +57,29 @@ class PersonalLoRALoader:
 
     def apply(self, model, scene_prompt, slots, clip=None):
         rows = decode_slots(slots)
-        names = catalog()
-        loader = LoraLoader()
+        loaded_path = None
         for index, row in enumerate(rows, 1):
             if not row.active:
                 continue
-            if row.name not in names:
-                raise ValueError(f"第 {index} 槽找不到 LoRA：{row.name}")
+            path = resolve_lora(LORA_ROOT, row.name, LORA_EXTENSIONS)
+            if path is None:
+                raise ValueError(f"第 {index} 槽在 ComfyUI 的 models/loras 内找不到 LoRA：{row.name}")
+            if path != loaded_path:
+                if LORA_METADATA:
+                    weights, metadata = comfy.utils.load_torch_file(str(path), safe_load=True, return_metadata=True)
+                    options = {"lora_metadata": metadata}
+                else:
+                    weights = comfy.utils.load_torch_file(str(path), safe_load=True)
+                    options = {}
+                loaded_path = path
             clip_strength = row.strength if clip is not None else 0.0
-            model, clip = loader.load_lora(model, clip, names[row.name], row.strength, clip_strength)
+            model, clip = comfy.sd.load_lora_for_models(model, clip, weights, row.strength, clip_strength, **options)
         text = compose(rows, scene_prompt, LIBRARY.read(), HEAD_LIBRARY.read())
         return {"ui": {"positive_prompt": [text]}, "result": (model, clip, text)}
 
 
 routes = PromptServer.instance.routes
-WEBSITE_IMPORT = register_website_routes(routes, PACKAGE, STATE, LIBRARY, HEAD_LIBRARY, folder_paths)
+WEBSITE_IMPORT = register_website_routes(routes, PACKAGE, STATE, LIBRARY, HEAD_LIBRARY, LORA_ROOT, LORA_EXTENSIONS)
 
 
 @routes.get("/personal-lora/catalog")
@@ -82,8 +96,8 @@ async def set_default(request):
     try:
         body = await request.json()
         name = lora_key(body["name"])
-        if name not in catalog():
-            raise ValueError("LoRA 已不在本机模型列表里")
+        if resolve_lora(LORA_ROOT, name, LORA_EXTENSIONS) is None:
+            raise ValueError("LoRA 已不在 ComfyUI 的 models/loras 内")
         mode = body.get("mode", "short")
         if mode not in ("short", "head"):
             raise ValueError("触发词档位无效")

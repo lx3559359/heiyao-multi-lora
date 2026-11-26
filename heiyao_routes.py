@@ -1,13 +1,12 @@
 """Loopback-only endpoints for importing from the Heiyao website."""
-from functools import wraps
+from functools import partial, wraps
 import ipaddress
-from pathlib import Path
 from urllib.parse import urlsplit
 
 from aiohttp import web
 
 from .heiyao_import import HeiyaoError, Site
-from .runtime_storage import lora_root
+from .runtime_storage import lora_catalog, resolve_lora
 
 
 def assert_loopback(request):
@@ -23,11 +22,11 @@ def assert_loopback(request):
     raise HeiyaoError("请从本机 localhost 或 127.0.0.1 打开 ComfyUI 使用官网导入", 403)
 
 
-def register_website_routes(routes, package, state, library, head_library, folder_paths):
-    root = lora_root(folder_paths)
+def register_website_routes(routes, package, state, library, head_library, root, extensions):
     if root is None:
         return False
-    site = Site(root, state, index_path=package / "data" / "heiyao_verified_weights.json", folder_paths=folder_paths)
+    site = Site(root, state, index_path=package / "data" / "heiyao_verified_weights.json",
+                local_loras=partial(lora_catalog, root, extensions))
 
     def guarded(handler):
         @wraps(handler)
@@ -88,8 +87,7 @@ def register_website_routes(routes, package, state, library, head_library, folde
             resource_id, data.get("session"), allow_download=data.get("download") is True,
             renew_ticket=data.get("renewTicket") is True,
         )
-        mapped = folder_paths.get_full_path("loras", name)
-        if not mapped or (not reused and Path(mapped).resolve() != (root / name).resolve()):
+        if resolve_lora(root, name, extensions) is None:
             raise HeiyaoError("ComfyUI 还未登记该权重路径", 409)
         if resource.prompt:
             library.remember_import(name, resource.prompt)

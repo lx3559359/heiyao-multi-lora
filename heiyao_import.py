@@ -144,17 +144,6 @@ def matching_weight(root, resource):
     return None
 
 
-def matching_comfy_weight(folder_paths, resource):
-    names = resource.weight_names()
-    for name in folder_paths.get_filename_list("loras"):
-        key = name.replace("\\", "/")
-        if key.rsplit("/", 1)[-1] in names:
-            path = folder_paths.get_full_path("loras", name)
-            if path and verify_weight(Path(path), resource):
-                return key
-    return None
-
-
 def website_token(body, expiry_key):
     token = body.get("accessToken")
     try:
@@ -167,9 +156,9 @@ def website_token(body, expiry_key):
 
 
 class Site:
-    def __init__(self, root, data_dir, *, index_path=None, folder_paths=None):
+    def __init__(self, root, data_dir, *, index_path=None, local_loras=None):
         self.root = root.resolve()
-        self.folder_paths = folder_paths
+        self.local_loras = local_loras
         self.data_dir = data_dir
         index = index_path if index_path is not None else data_dir / "heiyao_verified_weights.json"
         self.index = json.loads(index.read_text(encoding="utf-8"))
@@ -336,8 +325,12 @@ class Site:
                         website_head_prompt(summary))
 
     def local_weight(self, resource):
-        if self.folder_paths is not None:
-            return matching_comfy_weight(self.folder_paths, resource)
+        if self.local_loras is not None:
+            names = resource.weight_names()
+            for name, path in self.local_loras().items():
+                if name.rsplit("/", 1)[-1] in names and verify_weight(path, resource):
+                    return name
+            return None
         path = matching_weight(self.root, resource)
         return path.relative_to(self.root).as_posix() if path else None
 

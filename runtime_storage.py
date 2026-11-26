@@ -1,4 +1,5 @@
 """Keep user state outside the replaceable Manager package directory."""
+import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -29,5 +30,46 @@ def prepare_state(package, folder_paths):
 
 
 def lora_root(folder_paths):
-    directories = folder_paths.get_folder_paths("loras")
-    return Path(directories[0]).resolve() if directories else None
+    models = getattr(folder_paths, "models_dir", None)
+    if not models:
+        return None
+    root = Path(models).resolve() / "loras"
+    return root if root.resolve() == root else None
+
+
+def resolve_lora(root, name, extensions):
+    if root is None:
+        return None
+    path = root / name
+    if path.suffix.lower() not in extensions:
+        return None
+    try:
+        path = path.resolve()
+        if path.is_relative_to(root) and path.is_file():
+            return path
+    except (OSError, RuntimeError):
+        pass
+    return None
+
+
+def unlinked_directory(path):
+    try:
+        return path.resolve() == path
+    except (OSError, RuntimeError):
+        return False
+
+
+def lora_catalog(root, extensions):
+    if root is None:
+        return {}
+    catalog = {}
+    for directory, folders, files in os.walk(root, followlinks=False):
+        parent = Path(directory)
+        # Exclude linked subdirectories, including Windows junctions.
+        folders[:] = [name for name in folders if name != ".git" and unlinked_directory(parent / name)]
+        for filename in files:
+            name = (parent / filename).relative_to(root).as_posix()
+            path = resolve_lora(root, name, extensions)
+            if path is not None:
+                catalog[name] = path
+    return dict(sorted(catalog.items()))
