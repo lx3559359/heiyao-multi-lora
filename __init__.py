@@ -86,7 +86,7 @@ WEBSITE_IMPORT = register_website_routes(routes, PACKAGE, STATE, LIBRARY, HEAD_L
 async def get_catalog(request):
     return web.json_response({"loras": list(catalog()), "defaults": LIBRARY.read(),
                               "head_defaults": HEAD_LIBRARY.read(), "dynamic_slots": True, "website_import": WEBSITE_IMPORT,
-                              "website_membership": WEBSITE_IMPORT})
+                              "website_membership": WEBSITE_IMPORT, "website_updates": WEBSITE_IMPORT})
 
 
 @routes.put("/personal-lora/default")

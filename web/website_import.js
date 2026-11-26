@@ -23,16 +23,21 @@ async function websiteRequest(path, body) {
     return result;
 }
 
-export function openWebsiteImport(onImport, showMembership = false) {
+export function openWebsiteImport(onImport, showMembership = false, update = null) {
+    const updating = Boolean(update);
     const dialog = make("dialog", "", { className: "personal-lora-dialog personal-lora-website" });
-    dialog.setAttribute("aria-label", "从黑曜官网下载 LoRA");
+    const title = updating ? "检查官网新版" : "官网 LoRA 导入";
+    dialog.setAttribute("aria-label", title);
     const form = make("form", "", { method: "dialog" });
-    const heading = make("strong", "官网 LoRA 导入");
+    const heading = make("strong", title);
     const searchLine = make("div", "", { className: "personal-lora-website-line" });
     const query = make("input", "", { placeholder: "搜索角色或风格，或粘贴官网 LoRA 链接" });
     query.setAttribute("aria-label", "角色名、风格名或官网 LoRA 链接");
-    const search = make("button", "搜索", { type: "button" });
-    searchLine.append(query, search);
+    const search = make("button", updating ? "重新检查" : "搜索", { type: "button" });
+    if (!updating) searchLine.append(query);
+    searchLine.append(search);
+    const localVersion = make("div", "", { hidden: !updating });
+    const remoteVersion = make("div", "", { hidden: !updating });
 
     const role = make("select", "", { hidden: true });
     role.setAttribute("aria-label", "选择官网 LoRA");
@@ -55,11 +60,13 @@ export function openWebsiteImport(onImport, showMembership = false) {
     account.append(username, password, login);
 
     const controls = make("nav");
-    const importButton = make("button", "导入到新槽位", { type: "button", disabled: true });
+    const importButton = make("button", updating ? "下载并切换当前槽位" : "导入到新槽位",
+        { type: "button", disabled: true });
+    const downloadButton = make("button", "只下载", { type: "button", disabled: true, hidden: !updating });
     const logout = make("button", "退出官网登录", { type: "button", hidden: !websiteSession });
     const close = make("button", "关闭");
-    controls.append(importButton, logout, close);
-    form.append(heading, searchLine, role, mode, prompt, account, quota, status, controls);
+    controls.append(downloadButton, importButton, logout, close);
+    form.append(heading, searchLine, localVersion, remoteVersion, role, mode, prompt, account, quota, status, controls);
     dialog.append(form);
     document.body.append(dialog);
     dialog.showModal();
@@ -87,7 +94,7 @@ export function openWebsiteImport(onImport, showMembership = false) {
     async function run(action) {
         if (busy) return;
         busy = true;
-        for (const control of [search, role, importButton, login, logout]) control.disabled = true;
+        for (const control of [search, role, importButton, downloadButton, login, logout]) control.disabled = true;
         try {
             await action();
         } catch (error) {
@@ -101,12 +108,14 @@ export function openWebsiteImport(onImport, showMembership = false) {
             if (error.code === "NEW_TICKET_REQUIRED") {
                 renewTicket = true;
                 importButton.textContent = "重新申请官网票据";
+                downloadButton.textContent = "重新申请并只下载";
             }
             await refreshQuota();
         } finally {
             busy = false;
             for (const control of [search, role, login, logout]) control.disabled = false;
             importButton.disabled = !activeDetail?.available;
+            downloadButton.disabled = !activeDetail?.available || activeDetail.local;
         }
     }
 
@@ -139,7 +148,45 @@ export function openWebsiteImport(onImport, showMembership = false) {
         }
     }
 
-    search.onclick = () => run(async () => {
+    async function checkVersion() {
+        activeDetail = undefined;
+        renewTicket = false;
+        prompt.hidden = true;
+        mode.hidden = true;
+        account.hidden = true;
+        status.textContent = "正在核对当前权重和官网版本…";
+        localVersion.textContent = "当前文件 · " + update.name;
+        remoteVersion.textContent = "";
+        const result = await websiteRequest("update?" + new URLSearchParams({ name: update.name }));
+        localVersion.textContent = "本地版本 · " + (result.current.version ?? "未识别") + " · " + update.name;
+        remoteVersion.textContent = "官网版本 · " + (result.latest?.version ?? "未匹配到同款") +
+            (result.latest?.title ? " · " + result.latest.title : "");
+        if (result.state !== "update") {
+            status.textContent = ({
+                current: "已是官网版本。",
+                equivalent: "官网权重与本地文件一致。",
+                missing: "ComfyUI 安装目录下缺少当前权重。",
+                unknown: "当前权重暂无可核验的官网登记。",
+                unlisted: "官网目录里暂无同款的已发布版本。",
+                ambiguous: "官网有多个匹配版本，需先核对型号与权重登记。",
+                unverified: "已发现新版，暂无可核验的权重登记。",
+            })[result.state] ?? "暂无可用更新。";
+            return;
+        }
+        activeDetail = result.latest;
+        importButton.textContent = activeDetail.local ? "切换当前槽位" : "下载并切换当前槽位";
+        downloadButton.textContent = "只下载";
+        mode.value = "short";
+        mode.hidden = !activeDetail.head_prompt || activeDetail.head_prompt === activeDetail.prompt;
+        prompt.value = activeDetail.prompt ?? "";
+        prompt.hidden = !activeDetail.prompt;
+        const size = (activeDetail.bytes / 1024 ** 2).toFixed(1) + " MB";
+        status.textContent = activeDetail.local ? "新版已在本机 · " + size
+            : activeDetail.available ? "新版可下载 · " + size + " · 使用官网账号下载额度"
+            : "新版暂无官网直连";
+    }
+
+    async function searchCatalog() {
         activeDetail = undefined;
         renewTicket = false;
         prompt.hidden = true;
@@ -156,7 +203,8 @@ export function openWebsiteImport(onImport, showMembership = false) {
             role.selectedIndex = 1;
             await showRole();
         }
-    });
+    }
+    search.onclick = () => run(updating ? checkVersion : searchCatalog);
     query.addEventListener("keydown", (event) => {
         if (event.key === "Enter") {
             event.preventDefault();
@@ -171,7 +219,7 @@ export function openWebsiteImport(onImport, showMembership = false) {
             websiteSession = result.session;
             account.hidden = true;
             logout.hidden = false;
-            status.textContent = "已登录官网，可以下载并导入。";
+            status.textContent = "已登录官网，可以下载。";
             await refreshQuota();
         } finally {
             password.value = "";
@@ -184,7 +232,31 @@ export function openWebsiteImport(onImport, showMembership = false) {
         status.textContent = "已退出官网登录。";
         await refreshQuota();
     });
+    async function downloadVersion(switchCurrent) {
+        const replace = renewTicket;
+        renewTicket = false;
+        status.textContent = activeDetail.local ? "正在校验新版权重…" : "正在下载并校验新版权重…";
+        const result = await websiteRequest("update", {
+            name: update.name, id: activeDetail.id, session: websiteSession,
+            download: !activeDetail.local, renewTicket: replace, switch: switchCurrent,
+        });
+        if (!dialog.open) return;
+        onImport(result, switchCurrent);
+        if (switchCurrent) {
+            dialog.close();
+        } else {
+            activeDetail.local = true;
+            importButton.textContent = "切换当前槽位";
+            status.textContent = "新版已下载 · " + result.name;
+            await refreshQuota();
+        }
+    }
+    downloadButton.onclick = () => run(() => downloadVersion(false));
     importButton.onclick = () => run(async () => {
+        if (updating) {
+            await downloadVersion(true);
+            return;
+        }
         const replace = renewTicket;
         renewTicket = false;
         importButton.textContent = activeDetail.local ? "导入到新槽位" : "下载并导入";
@@ -197,4 +269,5 @@ export function openWebsiteImport(onImport, showMembership = false) {
             dialog.close();
         }
     });
+    if (updating) search.click();
 }

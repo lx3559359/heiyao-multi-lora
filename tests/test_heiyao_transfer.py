@@ -104,6 +104,27 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(reused)
         self.assertEqual(self.ticket_requests, 1)
 
+    async def test_versioned_download_preserves_old_weight_and_reuses_new_weight(self):
+        old = self.root / "黑曜官网" / RESOURCE / FILENAME
+        old.parent.mkdir(parents=True)
+        old.write_bytes(b"previous local weight")
+        with self.assertRaises(HeiyaoError) as missing_login:
+            await self.site.import_weight(RESOURCE, None, allow_download=True, versioned=True)
+        self.assertEqual(missing_login.exception.code, "LOGIN_REQUIRED")
+        self.assertEqual(self.ticket_requests, 0)
+        session = await self.site.login("test-account", "local-test-credential")
+        name, resource, reused = await self.site.import_weight(
+            RESOURCE, session, allow_download=True, versioned=True,
+        )
+        self.assertFalse(reused)
+        self.assertEqual(resource.destination(self.root, versioned=True), self.root / name)
+        self.assertEqual((self.root / name).read_bytes(), CHECKPOINT)
+        self.assertEqual(old.read_bytes(), b"previous local weight")
+        second_name, _, reused = await self.site.import_weight(RESOURCE, None, versioned=True)
+        self.assertEqual(second_name, name)
+        self.assertTrue(reused)
+        self.assertEqual(self.ticket_requests, 1)
+
     async def test_bad_digest_leaves_no_model_or_partial_file(self):
         self.download_body = b"X" * len(CHECKPOINT)
         session = await self.site.login("test-account", "local-test-credential")

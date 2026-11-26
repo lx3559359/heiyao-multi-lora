@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { openWebsiteImport } from "./website_import.js";
+import { switchSlotWeight } from "./slot_version.js";
 
 const blankRow = (inject) => ({
     name: "", enabled: false, strength: 0.9, inject, overrides: {},
@@ -255,9 +256,13 @@ function addSlots(node, name, inputData) {
         const edit = element("button", "编辑槽位 " + number + " 的触发词", "触发词");
         edit.type = "button";
         edit.className = "personal-lora-edit";
+        const version = element("button", "检查槽位 " + number + " 的官网新版", "新版");
+        version.type = "button";
+        version.hidden = !catalog.website_updates ||
+            !["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname);
         const actions = element("div");
         actions.className = "personal-lora-actions";
-        actions.append(enabled.control, inject.control, mode, weightControl, edit);
+        actions.append(enabled.control, inject.control, mode, weightControl, edit, version);
         card.append(label, select, actions, remove);
 
         function updateCard() {
@@ -267,6 +272,7 @@ function addSlots(node, name, inputData) {
             mode.disabled = !row.name;
             weight.value = row.strength;
             edit.disabled = !row.name;
+            version.disabled = !row.name;
             card.classList.toggle("is-enabled", Boolean(row.name && row.enabled && row.strength));
         }
 
@@ -302,6 +308,16 @@ function addSlots(node, name, inputData) {
         edit.onclick = () => editTrigger(row, refreshCatalog, changed).catch((error) => {
             message.textContent = error.message;
         });
+        version.onclick = () => {
+            const original = row.name;
+            openWebsiteImport((result, switchCurrent) => {
+                if (disposed) return;
+                if (switchCurrent && rows.includes(row) && row.name === original) {
+                    editStack(() => switchSlotWeight(row, result.name, result.custom ?? {}));
+                }
+                reload();
+            }, catalog.website_membership === true, { name: original });
+        };
         remove.onclick = () => {
             editStack(() => rows.splice(index, 1));
             (cards.children[index]?.querySelector("select") ?? add).focus();

@@ -16,8 +16,10 @@ from aiohttp import ClientError, ClientSession, ClientTimeout
 
 SITE = "https://openheiyao.top"
 CATALOG = "/v2/curated-resources"
+WEIGHT_INDEX_URL = "https://raw.githubusercontent.com/lx3559359/heiyao-multi-lora/main/data/heiyao_verified_weights.json"
 UUID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
 VERSION = r"(?<![A-Za-z0-9])v\d{1,5}(?!\d)"
+WEIGHT_NAME = re.compile(r'[^\\/:*?"<>|\x00-\x1f]+\.safetensors', re.I)
 TOKEN = re.compile(r"[A-Za-z0-9._~-]{1,4096}")
 SEARCH_ALIASES = {"黑曜古风真人": "黑曜真人古风", "古风真人": "真人古风"}
 FULL_SECTION = re.compile(r"^\s*完整触发提示词(?:\s*[\(（【][^\)）】]*[\)）】])?\s*[:：]\s*(.*)$")
@@ -117,8 +119,11 @@ class Resource:
     sha256: str
     head_prompt: str = ""
 
-    def destination(self, root):
-        return root / "黑曜官网" / self.id / self.name
+    def destination(self, root, versioned=False):
+        folder = root / "黑曜官网" / self.id
+        if versioned:
+            folder /= f"{self.version}-{self.sha256[:12]}"
+        return folder / self.name
 
     def weight_names(self):
         unsuffixed = re.sub(r"_" + re.escape(self.version) + r"(?=\.safetensors$)", "", self.name)
@@ -137,7 +142,8 @@ def verify_weight(path, resource):
 
 def matching_weight(root, resource):
     versioned, unversioned = resource.weight_names()
-    candidates = (root / versioned, root / unversioned, resource.destination(root))
+    candidates = (root / versioned, root / unversioned, resource.destination(root),
+                  resource.destination(root, versioned=True))
     for path in dict.fromkeys(candidates):
         if path.resolve().is_relative_to(root) and verify_weight(path, resource):
             return path
@@ -156,12 +162,14 @@ def website_token(body, expiry_key):
 
 
 class Site:
-    def __init__(self, root, data_dir, *, index_path=None, local_loras=None):
+    def __init__(self, root, data_dir, *, index_path=None, local_loras=None, index_url=None):
         self.root = root.resolve()
         self.local_loras = local_loras
+        self.index_url = index_url
         self.data_dir = data_dir
         index = index_path if index_path is not None else data_dir / "heiyao_verified_weights.json"
-        self.index = json.loads(index.read_text(encoding="utf-8"))
+        self.bundled_index = json.loads(index.read_text(encoding="utf-8"))
+        self.index = self.bundled_index
         self.visitor = None
         self.refresh = None
         self.accounts = {}
@@ -170,6 +178,36 @@ class Site:
         self.identity = None
         self.visitor_lock = asyncio.Lock()
         self.import_lock = asyncio.Lock()
+
+    async def refresh_index(self):
+        if self.index_url is None:
+            return False
+        try:
+            async with ClientSession(timeout=ClientTimeout(total=8)) as session:
+                async with session.get(self.index_url, allow_redirects=False) as response:
+                    if response.status != 200:
+                        return False
+                    payload = bytearray()
+                    async for part in response.content.iter_chunked(65536):
+                        payload.extend(part)
+                        if len(payload) > 2 * 1024 * 1024:
+                            return False
+            records = json.loads(payload)
+        except (ClientError, asyncio.TimeoutError, UnicodeError, ValueError):
+            return False
+        if not isinstance(records, dict) or not records:
+            return False
+        for resource_id, row in records.items():
+            if (not re.fullmatch(UUID, resource_id) or not isinstance(row, dict)
+                    or not isinstance(row.get("version"), str)
+                    or (row["version"] != "官网发布版" and not re.fullmatch(r"v\d{1,5}", row["version"]))
+                    or not isinstance(row.get("name"), str) or not WEIGHT_NAME.fullmatch(row["name"])
+                    or type(row.get("bytes")) is not int or row["bytes"] <= 0
+                    or not isinstance(row.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", row["sha256"])
+                    or any(not isinstance(row.get(field, ""), str) for field in ("title", "catalog_title"))):
+                return False
+        self.index = self.bundled_index | records
+        return True
 
     async def json(self, path, token=None, payload=None, *, post=False):
         headers = {"Accept": "application/json"}
@@ -305,6 +343,8 @@ class Site:
         if not re.fullmatch(UUID, resource_id):
             raise HeiyaoError("LoRA 资源 ID 格式不正确")
         record = self.index.get(resource_id)
+        if not record and await self.refresh_index():
+            record = self.index.get(resource_id)
         if not record:
             raise HeiyaoError("此条目暂无可核对版本与 SHA-256 的权重登记", 409)
         detail = await self.read(f"{CATALOG}/{resource_id}")
@@ -319,7 +359,7 @@ class Site:
         summary = detail.get("summary") or ""
         prompt = website_prompt(summary)
         name = record["name"]
-        if not re.fullmatch(r'[^\\/:*?"<>|\x00-\x1f]+\.safetensors', name, re.I):
+        if not WEIGHT_NAME.fullmatch(name):
             raise HeiyaoError("权重文件名无效", 409)
         return Resource(resource_id, title, prompt, record["version"], name, record["bytes"], record["sha256"],
                         website_head_prompt(summary))
@@ -383,7 +423,7 @@ class Site:
         )
         return name, resource.prompt, reused
 
-    async def import_weight(self, resource_id, handle, *, allow_download=False, renew_ticket=False):
+    async def import_weight(self, resource_id, handle, *, allow_download=False, renew_ticket=False, versioned=False):
         async with self.import_lock:
             resource = await self.resource(resource_id)
             existing = await asyncio.to_thread(self.local_weight, resource)
@@ -391,7 +431,7 @@ class Site:
                 return existing, resource, True
             if not allow_download:
                 raise HeiyaoError("本地同版权重已不可用，请重新选择版本并确认下载", 409)
-            destination = resource.destination(self.root)
+            destination = resource.destination(self.root, versioned)
             if not destination.resolve().is_relative_to(self.root) or destination.exists():
                 raise HeiyaoError("本地同名权重已存在，请先核对文件版本", 409)
             self.account(handle)

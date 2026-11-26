@@ -106,6 +106,13 @@ class Library:
         with self.lock:
             return self.examples | self._read_user()
 
+    def custom(self, name, official=None):
+        with self.lock:
+            value = self._read_user().get(name)
+            if value is not None and value not in (self.examples.get(name), official):
+                return value
+        return None
+
     def remember_import(self, name, prompt):
         with self.lock:
             if name not in self._read_user():

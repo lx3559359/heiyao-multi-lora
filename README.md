@@ -16,6 +16,8 @@
 
 在本机地址打开 ComfyUI 后，从「官网导入」可搜索角色名、风格名或粘贴官网 LoRA 详情链接。留空搜索会列出官网已发布的 LoRA。导入优先复用主 LoRA 目录中校验一致的权重。缺失权重可以按官网会员权限下载，通过 SHA-256 校验后保存到主 LoRA 目录的 `黑曜官网` 子目录。
 
+点击槽位里的「新版」可查看本地版本和官网版本。同款新版通过权重登记核对后，可选择「只下载」或「下载并切换当前槽位」。新版使用独立目录保存。切换保留槽位参数、简短／头部档位和自定义触发词。仅查询版本时无需会员下载额度。
+
 ## 更新与数据
 
 自定义触发词和官网设备身份写在 ComfyUI 用户目录下的 `__personal_lora` 中，独立于节点包目录。旧版配置仍在原插件目录时，新版首次加载会迁移现有文件。已在用户目录保存的值优先。
@@ -23,5 +25,7 @@
 在 Manager 中对 `heiyao-multi-lora` 检查更新，安装所需版本后重启 ComfyUI。
 
 ## 发布
+
+新 LoRA 权重发布后可单独更新 `data/heiyao_verified_weights.json`。记录官网资源 ID、真实权重版本、官网标题、文件名、字节数和 SHA-256。为不同权重版本保留各自的官网资源 ID 和登记，有助于识别旧版工作流。节点检查新版时会读取仓库的校验登记和官网当前发布目录。
 
 需要在线分发的功能更新通过本地验证后，递增 `pyproject.toml` 的版本号并提交到 `main`。在 GitHub Actions 运行 `Publish to Comfy Registry` 发布相同版本。该工作流使用仓库的 `REGISTRY_ACCESS_TOKEN` Secret。Registry 版本激活后，在 Manager 检查更新、安装并重启验证。 [Comfy Registry 发布指南](https://docs.comfy.org/registry/publishing)
