@@ -30,10 +30,10 @@ def prepare_state(package, folder_paths):
 
 
 def lora_root(folder_paths):
-    models = getattr(folder_paths, "models_dir", None)
-    if not models:
+    module_file = getattr(folder_paths, "__file__", None)
+    if not module_file:
         return None
-    root = Path(models).resolve() / "loras"
+    root = Path(module_file).resolve().parent / "models" / "loras"
     return root if root.resolve() == root else None
 
 

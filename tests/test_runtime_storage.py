@@ -31,10 +31,11 @@ class UpdateStorageTests(unittest.TestCase):
             self.assertEqual(prepare_state(package, paths), state)
             self.assertEqual(triggers.read_text(encoding="utf-8"), '{"old": "Edited after install."}')
 
-    def test_main_model_root_wins_even_when_an_extra_directory_is_first(self):
+    def test_install_root_wins_even_when_model_directory_is_overridden(self):
         base = pathlib.Path.cwd() / "temp" / "manager-models"
-        custom_root = base / "loras"
-        paths = SimpleNamespace(models_dir=str(base), get_folder_paths=lambda kind: [str(base / "other"), str(custom_root)])
+        custom_root = base / "models" / "loras"
+        paths = SimpleNamespace(__file__=str(base / "folder_paths.py"), models_dir=str(base / "other"),
+                                get_folder_paths=lambda kind: [str(base / "other"), str(custom_root)])
         self.assertEqual(lora_root(paths), custom_root.resolve())
         self.assertIsNone(lora_root(SimpleNamespace()))
 
