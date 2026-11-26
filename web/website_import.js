@@ -29,13 +29,13 @@ export function openWebsiteImport(onImport, showMembership = false) {
     const form = make("form", "", { method: "dialog" });
     const heading = make("strong", "官网 LoRA 导入");
     const searchLine = make("div", "", { className: "personal-lora-website-line" });
-    const query = make("input", "", { placeholder: "搜索角色，或粘贴黑曜官网 LoRA 详情链接" });
-    query.setAttribute("aria-label", "角色名或官网详情链接");
+    const query = make("input", "", { placeholder: "搜索角色或风格，或粘贴官网 LoRA 链接" });
+    query.setAttribute("aria-label", "角色名、风格名或官网 LoRA 链接");
     const search = make("button", "搜索", { type: "button" });
     searchLine.append(query, search);
 
     const role = make("select", "", { hidden: true });
-    role.setAttribute("aria-label", "选择官网角色 LoRA");
+    role.setAttribute("aria-label", "选择官网 LoRA");
     const mode = make("select", "", { hidden: true });
     mode.setAttribute("aria-label", "官网触发词档位");
     mode.append(new Option("简短触发词", "short"), new Option("完整头部特征触发词", "head"));
@@ -148,10 +148,10 @@ export function openWebsiteImport(onImport, showMembership = false) {
         role.hidden = true;
         status.textContent = "正在搜索官网 LoRA…";
         const { items } = await websiteRequest("search?" + new URLSearchParams({ q: query.value.trim() }));
-        role.replaceChildren(new Option("选择角色和版本", ""));
+        role.replaceChildren(new Option("选择 LoRA 和版本", ""));
         role.append(...items.map((item) => new Option(item.title, item.id)));
         role.hidden = !items.length;
-        status.textContent = items.length ? "选择要导入的角色版本。" : "没有找到对应 LoRA。";
+        status.textContent = items.length ? `找到 ${items.length} 条 LoRA，请选择要导入的版本。` : "没有找到对应 LoRA。";
         if (items.length === 1) {
             role.selectedIndex = 1;
             await showRole();

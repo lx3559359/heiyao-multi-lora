@@ -19,6 +19,7 @@ CATALOG = "/v2/curated-resources"
 UUID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
 VERSION = r"(?<![A-Za-z0-9])v\d{1,5}(?!\d)"
 TOKEN = re.compile(r"[A-Za-z0-9._~-]{1,4096}")
+SEARCH_ALIASES = {"黑曜古风真人": "黑曜真人古风", "古风真人": "真人古风"}
 FULL_SECTION = re.compile(r"^\s*完整触发提示词(?:\s*[\(（【][^\)）】]*[\)）】])?\s*[:：]\s*(.*)$")
 HEAD_SECTION = re.compile(r"^\s*完整头部特征触发词[^:：]*[:：]\s*(.*)$")
 OTHER_SECTION = re.compile(r"^[\u3400-\u9fff][^:：]{0,30}[:：]")
@@ -75,7 +76,7 @@ def website_prompt(summary):
     try:
         return full_prompt(summary)
     except HeiyaoError:
-        if re.search(r"(?:^|[，,。；;])\s*(?:未记录固定触发词|无需固定触发词)(?:[。.!！]|$)", summary):
+        if re.search(r"(?:^|[，,。；;])\s*(?:未记录固定触发词|无需固定触发词|无固定触发词)(?:[。.!！]|$)", summary):
             return ""
         raise
 
@@ -119,6 +120,10 @@ class Resource:
     def destination(self, root):
         return root / "黑曜官网" / self.id / self.name
 
+    def weight_names(self):
+        unsuffixed = re.sub(r"_" + re.escape(self.version) + r"(?=\.safetensors$)", "", self.name)
+        return self.name, unsuffixed
+
 
 def verify_weight(path, resource):
     try:
@@ -131,11 +136,22 @@ def verify_weight(path, resource):
 
 
 def matching_weight(root, resource):
-    unsuffixed = re.sub(r"_" + re.escape(resource.version) + r"(?=\.safetensors$)", "", resource.name)
-    candidates = (root / resource.name, root / unsuffixed, resource.destination(root))
+    versioned, unversioned = resource.weight_names()
+    candidates = (root / versioned, root / unversioned, resource.destination(root))
     for path in dict.fromkeys(candidates):
         if path.resolve().is_relative_to(root) and verify_weight(path, resource):
             return path
+    return None
+
+
+def matching_comfy_weight(folder_paths, resource):
+    names = resource.weight_names()
+    for name in folder_paths.get_filename_list("loras"):
+        key = name.replace("\\", "/")
+        if key.rsplit("/", 1)[-1] in names:
+            path = folder_paths.get_full_path("loras", name)
+            if path and verify_weight(Path(path), resource):
+                return key
     return None
 
 
@@ -151,8 +167,9 @@ def website_token(body, expiry_key):
 
 
 class Site:
-    def __init__(self, root, data_dir, *, index_path=None):
+    def __init__(self, root, data_dir, *, index_path=None, folder_paths=None):
         self.root = root.resolve()
+        self.folder_paths = folder_paths
         self.data_dir = data_dir
         index = index_path if index_path is not None else data_dir / "heiyao_verified_weights.json"
         self.index = json.loads(index.read_text(encoding="utf-8"))
@@ -264,21 +281,36 @@ class Site:
                 pass
 
     async def search(self, query):
+        query = SEARCH_ALIASES.get(query, query)
         exact = lookup_id(query)
         if exact:
-            detail = await self.read(f"{CATALOG}/{exact}")
-            items = [detail]
+            items = [await self.read(f"{CATALOG}/{exact}")]
         else:
             if "://" in query or len(query) > 120 or any(ord(char) < 32 for char in query):
                 raise HeiyaoError("请填写角色名或黑曜官网 LoRA 详情链接")
-            params = {"tag": "LoRA", "limit": 25}
-            if query:
-                params["query"] = query
-            items = (await self.read(CATALOG + "?" + urlencode(params))).get("items", [])
-        return [{"id": item["id"], "title": item["title"]} for item in items
-                if isinstance(item, dict) and "LoRA" in item.get("tags", [])
-                and isinstance(item.get("id"), str) and re.fullmatch(UUID, item["id"])
-                and isinstance(item.get("title"), str)]
+            items = await self.search_pages(query)
+        results = {item["id"]: {"id": item["id"], "title": item["title"]} for item in items
+                   if isinstance(item, dict) and "LoRA" in item.get("tags", [])
+                   and isinstance(item.get("id"), str) and re.fullmatch(UUID, item["id"])
+                   and isinstance(item.get("title"), str)}
+        return sorted(results.values(), key=lambda item: query.casefold() not in item["title"].casefold())
+
+    async def search_pages(self, query):
+        params = {"tag": "LoRA", "limit": 50}
+        if query:
+            params["query"] = query
+        items = []
+        seen = set()
+        while True:
+            page = await self.read(CATALOG + "?" + urlencode(params))
+            items.extend(page.get("items", []))
+            cursor = page.get("nextCursor")
+            if not cursor:
+                return items
+            if not isinstance(cursor, str) or cursor in seen:
+                raise HeiyaoError("官网目录分页响应异常，请稍后重试", 502)
+            seen.add(cursor)
+            params["cursor"] = cursor
 
     async def resource(self, resource_id):
         if not re.fullmatch(UUID, resource_id):
@@ -288,9 +320,12 @@ class Site:
             raise HeiyaoError("此条目暂无可核对版本与 SHA-256 的权重登记", 409)
         detail = await self.read(f"{CATALOG}/{resource_id}")
         title = detail.get("title", "")
-        if (detail.get("id") != resource_id or "LoRA" not in detail.get("tags", [])
-                or re.search(VERSION, title, re.I) is None
-                or re.search(VERSION, title, re.I)[0].lower() != record["version"]):
+        if not isinstance(title, str):
+            raise HeiyaoError("官网详情没有有效的 LoRA 标题", 502)
+        version = re.search(VERSION, title, re.I)
+        expected_title = record.get("title")
+        matches = title == expected_title if expected_title else bool(version and version[0].lower() == record["version"])
+        if detail.get("id") != resource_id or "LoRA" not in detail.get("tags", []) or not matches:
             raise HeiyaoError("官网条目版本与已校验的权重登记不一致", 409)
         summary = detail.get("summary") or ""
         prompt = website_prompt(summary)
@@ -300,9 +335,15 @@ class Site:
         return Resource(resource_id, title, prompt, record["version"], name, record["bytes"], record["sha256"],
                         website_head_prompt(summary))
 
+    def local_weight(self, resource):
+        if self.folder_paths is not None:
+            return matching_comfy_weight(self.folder_paths, resource)
+        path = matching_weight(self.root, resource)
+        return path.relative_to(self.root).as_posix() if path else None
+
     async def detail(self, resource_id):
         resource = await self.resource(resource_id)
-        existing = await asyncio.to_thread(matching_weight, self.root, resource)
+        existing = await asyncio.to_thread(self.local_weight, resource)
         available = bool(existing)
         if not existing:
             available = (await self.read(f"{CATALOG}/{resource_id}/private-download/status")).get("available") is True
@@ -352,9 +393,9 @@ class Site:
     async def import_weight(self, resource_id, handle, *, allow_download=False, renew_ticket=False):
         async with self.import_lock:
             resource = await self.resource(resource_id)
-            existing = await asyncio.to_thread(matching_weight, self.root, resource)
+            existing = await asyncio.to_thread(self.local_weight, resource)
             if existing:
-                return existing.relative_to(self.root).as_posix(), resource, True
+                return existing, resource, True
             if not allow_download:
                 raise HeiyaoError("本地同版权重已不可用，请重新选择版本并确认下载", 409)
             destination = resource.destination(self.root)

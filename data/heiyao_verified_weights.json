@@ -65,6 +65,13 @@
     "sha256": "10bac05477e75cd3d493024aba287e3fc3a33b74a14f46c2bc2a9fbb84e966da",
     "version": "v001"
   },
+  "14ebc036-bb77-414f-ad14-d1a9d6370672": {
+    "bytes": 228587208,
+    "name": "最新版金美庭_krea2.safetensors",
+    "sha256": "e31c734be0de23166a30b7cf25280011ee9f99b25b31bbe24211843c9b6d2945",
+    "title": "金美庭 | Krea 2 角色 LoRA(最新版)",
+    "version": "官网发布版"
+  },
   "1557d7a3-162d-46eb-967e-85bb9a9708c5": {
     "bytes": 228587760,
     "name": "黑曜真人美化_Krea2_v001.safetensors",
@@ -161,6 +168,13 @@
     "sha256": "8a293cdb586077fa41e18b89057a1b6802151b3a67247982dafb9c05cb64bb3e",
     "version": "v001"
   },
+  "3d90c238-7736-48bd-9ef2-20eb25041b2b": {
+    "bytes": 228587208,
+    "name": "黑曜真人古风_krea2.safetensors",
+    "sha256": "f1987c2628a4bc7bd0715f875a283b84546f9b14c902150e37e051076a2da463",
+    "title": "黑曜真人古风 | Krea 2 风格 LoRA",
+    "version": "官网发布版"
+  },
   "42df2e42-e000-4af2-9989-4e6bc5121c6a": {
     "bytes": 228587744,
     "name": "凡人修仙传_范静梅_relitevo.safetensors",
@@ -184,6 +198,13 @@
     "name": "斗破苍穹_曹颖_dpcaoyingvex_v001.safetensors",
     "sha256": "3405f70b1aee3a807dc0877c542c31df40005eb212ea32723757493141439cdc",
     "version": "v001"
+  },
+  "4ac6217b-86e3-4498-b841-2d48b628fbe4": {
+    "bytes": 228587208,
+    "name": "黑曜动漫二次元_krea2.safetensors",
+    "sha256": "2b45ad056f82f5f98b38b4be1a86d7a9b36323b9d5fc17a8fd5c0c32aeb641ea",
+    "title": "黑曜动漫二次元 | Krea 2 风格 LoRA",
+    "version": "官网发布版"
   },
   "4d7bd24b-5592-4651-a236-165277f4c6b2": {
     "bytes": 228587736,
@@ -347,6 +368,13 @@
     "sha256": "627f2be39268a63d93dc530acd8a49c253041200b6f4b67799c7f0c9e581e3e4",
     "version": "v001"
   },
+  "82a7942d-a02c-4db0-8a44-2314058d18b0": {
+    "bytes": 228587224,
+    "name": "金美庭_nsfw_krea2.safetensors",
+    "sha256": "be2c0052e642ced83cc3f9471ed0da753eb45b0b9358b3edbfc973f78ab0bed5",
+    "title": "金美庭 | Krea 2 角色 LoRA(原版)",
+    "version": "官网发布版"
+  },
   "832cc072-4639-4dbe-bc3c-fad9f036595b": {
     "bytes": 228587736,
     "name": "凡人修仙传_宋玉_syrvex.safetensors",
@@ -485,6 +513,13 @@
     "sha256": "a7c4936fca171cadbdc5b97c2315da7810d5fd68e6a4deffb3813074ee9e0a6f",
     "version": "v001"
   },
+  "caa17d13-cb46-4591-b164-7686dac96fb5": {
+    "bytes": 228587224,
+    "name": "徐贞淑_nsfw_krea2.safetensors",
+    "sha256": "bb2f3938e997791aeb4c732a3ebff4cc276114fcacbe2d8d6ba2fd90cbccdf30",
+    "title": "徐贞淑 | Krea 2 角色 LoRA",
+    "version": "官网发布版"
+  },
   "ccbf9656-5c00-4ec5-a044-26765eab02e7": {
     "bytes": 228587760,
     "name": "诛仙_水月大师_zxshuiyuevex_v001.safetensors",
@@ -616,6 +651,13 @@
     "name": "凡人修仙传_钟卫娘_xorimero.safetensors",
     "sha256": "248550dcab94804a4f306a2de2477e9d173a6810a8f1aec1b3e4037303c0f5a1",
     "version": "v001"
+  },
+  "f4cd2676-8ef0-44ad-8862-9a9d71dca04f": {
+    "bytes": 228587208,
+    "name": "精致二次元插画_krea2.safetensors",
+    "sha256": "4c870d7146d8de3357d25350d3e9738109b36f444a127fe6cc4598a3f06ffd6a",
+    "title": "精致二次元插画 | Krea 2 风格 LoRA",
+    "version": "官网发布版"
   },
   "f64a89e0-d8b6-4768-99d9-6d543b33c504": {
     "bytes": 228587768,

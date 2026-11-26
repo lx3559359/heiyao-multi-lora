@@ -27,7 +27,7 @@ def register_website_routes(routes, package, state, library, head_library, folde
     root = lora_root(folder_paths)
     if root is None:
         return False
-    site = Site(root, state, index_path=package / "data" / "heiyao_verified_weights.json")
+    site = Site(root, state, index_path=package / "data" / "heiyao_verified_weights.json", folder_paths=folder_paths)
 
     def guarded(handler):
         @wraps(handler)
@@ -89,8 +89,8 @@ def register_website_routes(routes, package, state, library, head_library, folde
             renew_ticket=data.get("renewTicket") is True,
         )
         mapped = folder_paths.get_full_path("loras", name)
-        if not mapped or Path(mapped).resolve() != (root / name).resolve():
-            raise HeiyaoError("ComfyUI 还未从主 LoRA 目录加载该权重", 409)
+        if not mapped or (not reused and Path(mapped).resolve() != (root / name).resolve()):
+            raise HeiyaoError("ComfyUI 还未登记该权重路径", 409)
         if resource.prompt:
             library.remember_import(name, resource.prompt)
         if resource.head_prompt:
