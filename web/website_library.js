@@ -1,4 +1,4 @@
-import { make, websiteAccount, websiteRequest } from "./website_import.js";
+import { make, websiteAccount, websiteDownload, websiteRequest } from "./website_import.js";
 
 export function openWebsiteLibrary(onDownload) {
     const title = "官网 LoRA 库比对";
@@ -31,7 +31,8 @@ export function openWebsiteLibrary(onDownload) {
     const stop = make("button", "停止后续下载", { type: "button", hidden: true });
     const close = make("button", "关闭", { type: "submit" });
     controls.append(download, stop, logout, close);
-    form.append(make("strong", title), totals, searchLine, selectLabel, list, pending, account, quota, status, controls);
+    const progress = make("div", "", { className: "personal-lora-download-progress", hidden: true });
+    form.append(make("strong", title), totals, searchLine, selectLabel, list, pending, account, quota, status, progress, controls);
     dialog.append(form);
     document.body.append(dialog);
     dialog.showModal();
@@ -182,7 +183,7 @@ export function openWebsiteLibrary(onDownload) {
         const queue = result.missing.filter(({ id }) => selected.has(id));
         const session = auth.session;
         const attempted = new Set();
-        const active = new Map();
+        const active = new Set();
         let completed = 0;
         let reason = "";
         let failed = 0;
@@ -192,15 +193,15 @@ export function openWebsiteLibrary(onDownload) {
                 const item = queue.find(({ id, sha256 }) => selected.has(id) && !attempted.has(id) && !active.has(sha256));
                 if (!item) return;
                 attempted.add(item.id);
-                active.set(item.sha256, item.title);
-                status.textContent = "正在下载和校验 · " + [...active.values()].join("、");
+                active.add(item.sha256);
+                status.textContent = "已完成 " + completed + " 项 · 正在处理所选 LoRA";
                 errors.delete(item.id);
                 try {
                     const renewTicket = renewals.get(item.id) === true;
                     if (renewTicket) renewals.set(item.id, false);
-                    const receipt = await websiteRequest("library/download", {
+                    const receipt = await websiteDownload("library/download", {
                         id: item.id, sha256: item.sha256, session, download: true, renewTicket,
-                    });
+                    }, progress, item.title);
                     const available = result.missing.filter(({ sha256 }) => sha256 === item.sha256);
                     result.matched_count += available.length;
                     if (!receipt.reused) result.local_count++;

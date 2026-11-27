@@ -1,11 +1,12 @@
 """Loopback-only endpoints for importing from the Heiyao website."""
 from functools import partial, wraps
 import ipaddress
+import re
 from urllib.parse import urlsplit
 
 from aiohttp import web
 
-from .heiyao_import import HeiyaoError, Site, WEIGHT_INDEX_URL
+from .heiyao_import import HeiyaoError, Site, UUID, WEIGHT_INDEX_URL
 from .heiyao_versions import inspect_slot
 from .prompt_stack import lora_key
 from .runtime_storage import lora_catalog, resolve_lora
@@ -30,6 +31,7 @@ def register_website_routes(app, routes, package, state, library, head_library, 
     site = Site(root, state, index_path=package / "data" / "heiyao_verified_weights.json",
                 local_loras=partial(lora_catalog, root, extensions), index_url=WEIGHT_INDEX_URL)
     app.on_cleanup.append(site.close)
+    transfers = {}
 
     def guarded(handler):
         @wraps(handler)
@@ -79,15 +81,40 @@ def register_website_routes(app, routes, package, state, library, head_library, 
         await site.logout((await body(request)).get("session"))
         return {"ok": True}
 
+    @routes.get("/personal-lora/site/progress/{transfer_id}")
+    @guarded
+    async def download_progress(request):
+        state = transfers.get(request.match_info["transfer_id"])
+        if state is None:
+            raise HeiyaoError("下载进度暂不可用", 404)
+        return state
+
     async def import_model(data, versioned=False, expected_sha=None):
         resource_id = data.get("id")
         if not isinstance(resource_id, str):
             raise HeiyaoError("请选择官网 LoRA")
-        name, resource, reused = await site.import_weight(
-            resource_id, data.get("session"), allow_download=data.get("download") is True,
-            renew_ticket=data.get("renewTicket") is True,
-            versioned=versioned, expected_sha=expected_sha,
-        )
+        allow_download = data.get("download") is True
+        transfer_id = data.get("progressId") if allow_download else None
+        report = None
+        if transfer_id is not None:
+            if not isinstance(transfer_id, str) or not re.fullmatch(UUID, transfer_id):
+                raise HeiyaoError("下载进度编号格式错误")
+            if transfer_id in transfers:
+                raise HeiyaoError("此下载正在处理中", 409)
+
+            def report(phase, received=0, total=None):
+                transfers[transfer_id] = {"phase": phase, "received": received, "total": total}
+
+            report("prepare")
+        try:
+            name, resource, reused = await site.import_weight(
+                resource_id, data.get("session"), allow_download=allow_download,
+                renew_ticket=data.get("renewTicket") is True,
+                versioned=versioned, expected_sha=expected_sha, progress=report,
+            )
+        finally:
+            if report is not None:
+                transfers.pop(transfer_id, None)
         if resolve_lora(root, name, extensions) is None:
             raise HeiyaoError("ComfyUI 还未登记该权重路径", 409)
         if resource.prompt:

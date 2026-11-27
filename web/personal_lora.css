@@ -376,6 +376,21 @@
     gap: 5px;
 }
 
+.personal-lora-download-progress,
+.personal-lora-download-row {
+    display: grid;
+    gap: 4px;
+}
+
+.personal-lora-download-progress {
+    gap: 8px;
+}
+
+.personal-lora-download-row progress {
+    width: 100%;
+    accent-color: #4fa2ff;
+}
+
 .personal-lora-website [hidden],
 .personal-lora-header-actions [hidden] {
     display: none;

@@ -10,17 +10,77 @@ export function make(tag, text = "", options = {}) {
     return element;
 }
 
-export async function websiteRequest(path, body) {
-    const response = await api.fetchApi("/personal-lora/site/" + path, body === undefined ? {} : {
+export async function websiteRequest(path, body, signal) {
+    const response = await api.fetchApi("/personal-lora/site/" + path, body === undefined ? { signal } : {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal,
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
         throw Object.assign(new Error(result.message ?? "无法访问官网导入服务"), { code: result.code });
     }
     return result;
+}
+
+const downloadPhases = {
+    prepare: "正在准备下载",
+    zip_prepare: "正在等待官网打包",
+    file: "正在下载权重",
+    zip: "正在下载官网 ZIP",
+    verify: "正在校验权重",
+    extract: "正在解压和校验权重",
+};
+
+function sizeText(bytes) {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 ** 2) return (bytes / 1024).toFixed(1) + " KiB";
+    return (bytes / 1024 ** 2).toFixed(1) + " MiB";
+}
+
+export async function websiteDownload(path, body, container, title) {
+    if (!body.download || !globalThis.crypto?.randomUUID) return websiteRequest(path, body);
+    const progressId = globalThis.crypto.randomUUID();
+    const row = make("div", "", { className: "personal-lora-download-row" });
+    const description = make("small", title + " · " + downloadPhases.prepare);
+    const bar = make("progress", "", { max: 100 });
+    bar.setAttribute("aria-label", title + " 下载进度");
+    row.append(description, bar);
+    container.append(row);
+    container.hidden = false;
+
+    const polling = new AbortController();
+    let timer = setTimeout(poll, 250);
+    async function poll() {
+        try {
+            const { phase, received, total } = await websiteRequest("progress/" + progressId, undefined, polling.signal);
+            if (polling.signal.aborted) return;
+            let message = title + " · " + (downloadPhases[phase] ?? downloadPhases.prepare);
+            if (total > 0) {
+                const percent = Math.min(100, Math.floor(received / total * 100));
+                bar.value = percent;
+                message += " · " + sizeText(received) + " / " + sizeText(total) + " · " + percent + "%";
+            } else {
+                bar.removeAttribute("value");
+                if (phase === "zip") message += " · 已下载 " + sizeText(received);
+            }
+            description.textContent = message;
+        } catch {
+            // A progress read can race the start or end of the actual download request.
+        } finally {
+            if (!polling.signal.aborted) timer = setTimeout(poll, 450);
+        }
+    }
+
+    try {
+        return await websiteRequest(path, { ...body, progressId });
+    } finally {
+        clearTimeout(timer);
+        polling.abort();
+        row.remove();
+        container.hidden = !container.childElementCount;
+    }
 }
 
 export function websiteAccount(showMembership = true) {
@@ -113,7 +173,8 @@ export function openWebsiteImport(onImport, showMembership = false, update = nul
     const downloadButton = make("button", "只下载", { type: "button", disabled: true, hidden: !updating });
     const close = make("button", "关闭");
     controls.append(downloadButton, importButton, logout, close);
-    form.append(heading, searchLine, localVersion, remoteVersion, role, mode, prompt, account, quota, status, controls);
+    const progress = make("div", "", { className: "personal-lora-download-progress", hidden: true });
+    form.append(heading, searchLine, localVersion, remoteVersion, role, mode, prompt, account, quota, status, progress, controls);
     dialog.append(form);
     document.body.append(dialog);
     dialog.showModal();
@@ -256,10 +317,10 @@ export function openWebsiteImport(onImport, showMembership = false, update = nul
         const replace = renewTicket;
         renewTicket = false;
         status.textContent = activeDetail.local ? "正在校验新版权重…" : "正在下载并校验新版权重…";
-        const result = await websiteRequest("update", {
+        const result = await websiteDownload("update", {
             name: update.name, id: activeDetail.id, session: websiteSession,
             download: !activeDetail.local, renewTicket: replace, switch: switchCurrent,
-        });
+        }, progress, activeDetail.title);
         if (!dialog.open) return;
         onImport(result, switchCurrent);
         if (switchCurrent) {
@@ -281,9 +342,9 @@ export function openWebsiteImport(onImport, showMembership = false, update = nul
         renewTicket = false;
         importButton.textContent = activeDetail.local ? "导入到新槽位" : "下载并导入";
         status.textContent = activeDetail.local ? "正在导入已校验的同版权重…" : "正在下载并校验权重…";
-        const result = await websiteRequest("import", {
+        const result = await websiteDownload("import", {
             id: role.value, session: websiteSession, download: !activeDetail.local, renewTicket: replace,
-        });
+        }, progress, activeDetail.title);
         if (dialog.open) {
             onImport({ ...result, prompt_mode: mode.value });
             dialog.close();

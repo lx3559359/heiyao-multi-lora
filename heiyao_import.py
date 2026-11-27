@@ -616,7 +616,7 @@ class Site:
         return name, resource.prompt, reused
 
     async def import_weight(self, resource_id, handle, *, allow_download=False, renew_ticket=False,
-                            versioned=False, expected_sha=None):
+                            versioned=False, expected_sha=None, progress=None):
         async with self.import_locks.setdefault(resource_id, asyncio.Lock()):
             resource = await self.resource(resource_id)
             if expected_sha is not None and resource.sha256 != expected_sha:
@@ -633,31 +633,33 @@ class Site:
             key = (handle, resource.id, resource.sha256)
             async with self.download_slots:
                 try:
-                    await self.transfer(key, resource, destination, renew_ticket)
+                    await self.transfer(key, resource, destination, renew_ticket, progress=progress)
                 except HeiyaoError as error:
                     if error.code != "WEIGHT_RESPONSE_UNAVAILABLE":
                         raise
+                    if progress is not None:
+                        progress("zip_prepare")
                     bundle = await self.bundle(resource)
                     if bundle is None:
                         raise error
                     bundle_key = (*key, bundle["fileId"])
-                    await self.transfer(bundle_key, resource, destination, renew_ticket, bundle)
+                    await self.transfer(bundle_key, resource, destination, renew_ticket, bundle, progress=progress)
                     self.download_tickets.pop(key, None)
             return destination.relative_to(self.root).as_posix(), resource, False
 
-    async def transfer(self, key, resource, destination, renew_ticket, bundle=None):
+    async def transfer(self, key, resource, destination, renew_ticket, bundle=None, *, progress=None):
         if renew_ticket and self.download_tickets.get(key) is None:
             self.download_tickets.pop(key, None)
         path = await self.ticket(key, resource, bundle["fileId"] if bundle else None)
         try:
-            await self.download(path, resource, destination, bundle=bundle)
+            await self.download(path, resource, destination, bundle=bundle, progress=progress)
         except HeiyaoError as error:
             if error.code == "NEW_TICKET_REQUIRED":
                 self.download_tickets[key] = None
             raise
         self.download_tickets.pop(key, None)
 
-    async def download(self, path, resource, destination, *, bundle=None):
+    async def download(self, path, resource, destination, *, bundle=None, progress=None):
         destination.parent.mkdir(parents=True, exist_ok=True)
         length = 0
         digest = hashlib.sha256()
@@ -682,6 +684,10 @@ class Site:
                     raise HeiyaoError("官网单文件响应与登记权重不符", 502, "WEIGHT_RESPONSE_UNAVAILABLE")
                 if bundle and size is not None and size > maximum:
                     raise HeiyaoError("官网 ZIP 超过下载清单大小", 502)
+                phase = "zip" if bundle else "file"
+                total = size if bundle else resource.size
+                if progress is not None:
+                    progress(phase, 0, total)
                 with NamedTemporaryFile(dir=destination.parent, suffix=".part", delete=False) as file:
                     pending = Path(file.name)
                     async for part in response.content.iter_chunked(CHUNK_SIZE):
@@ -692,6 +698,10 @@ class Site:
                         if not bundle:
                             digest.update(part)
                         file.write(part)
+                        if progress is not None:
+                            progress(phase, length, total)
+            if progress is not None:
+                progress("extract" if bundle else "verify")
             verified = digest.hexdigest()
             if bundle:
                 archive, pending = pending, None

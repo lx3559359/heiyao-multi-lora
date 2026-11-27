@@ -52,6 +52,7 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
         self.transfer_connections = []
         self.first_started = asyncio.Event()
         self.release_first = None
+        self.release_download_remainder = None
         self.site = Site(self.root, data)
         app = web.Application()
 
@@ -89,6 +90,13 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
             if self.release_first:
                 self.first_started.set()
                 await self.release_first.wait()
+            if self.release_download_remainder:
+                stream = web.StreamResponse(headers={"Content-Length": str(len(CHECKPOINT))})
+                await stream.prepare(request)
+                await stream.write(CHECKPOINT[:5])
+                await self.release_download_remainder.wait()
+                await stream.write(CHECKPOINT[5:])
+                return stream
             return web.Response(body=self.download_body, status=self.download_status, headers=self.download_headers)
 
         async def files(request):
@@ -132,6 +140,30 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
         await self.site.get_weight(RESOURCE, session, allow_download=True)
         self.assertEqual(len(self.transfer_connections), 2)
         self.assertIs(*self.transfer_connections)
+
+    async def test_direct_download_reports_received_bytes_before_the_response_finishes(self):
+        self.release_download_remainder = asyncio.Event()
+        session = await self.site.login("test-account", "local-test-credential")
+        states = []
+
+        def report(phase, received=0, total=None):
+            states.append((phase, received, total))
+            if phase == "file" and received == 5:
+                self.release_download_remainder.set()
+
+        try:
+            name, _, reused = await asyncio.wait_for(
+                self.site.import_weight(RESOURCE, session, allow_download=True, progress=report), timeout=3,
+            )
+        finally:
+            self.release_download_remainder.set()
+        self.assertFalse(reused)
+        self.assertEqual((self.root / name).read_bytes(), CHECKPOINT)
+        self.assertEqual([item for item in states if item[0] == "file"], [
+            ("file", 0, len(CHECKPOINT)), ("file", 5, len(CHECKPOINT)),
+            ("file", len(CHECKPOINT), len(CHECKPOINT)),
+        ])
+        self.assertEqual(states[-1][0], "verify")
 
     async def test_distinct_downloads_overlap_and_duplicate_reuses_the_file(self):
         self.release_first = asyncio.Event()
@@ -226,14 +258,21 @@ class WebsiteTransferTests(unittest.IsolatedAsyncioTestCase):
             bundle.writestr("说明.txt", "Example attachment")
         self.bundle_body = archive.getvalue()
         session = await self.site.login("test-account", "local-test-credential")
+        progress = []
         with patch("heiyao_import.ZIP_POLL_INTERVAL", 0):
-            name, _, reused = await self.site.get_weight(RESOURCE, session, allow_download=True)
+            name, _, reused = await self.site.import_weight(
+                RESOURCE, session, allow_download=True,
+                progress=lambda phase, received=0, total=None: progress.append((phase, received, total)),
+            )
         self.assertFalse(reused)
         self.assertEqual((self.root / name).read_bytes(), CHECKPOINT)
         self.assertEqual(self.bundle_requests, 2)
         self.assertEqual(list(self.root.rglob("*.zip")), [])
         self.assertEqual(list(self.root.rglob("说明.txt")), [])
         self.assertEqual(list(self.root.rglob("*.part")), [])
+        self.assertIn(("zip_prepare", 0, None), progress)
+        self.assertIn(("zip", len(self.bundle_body), len(self.bundle_body)), progress)
+        self.assertEqual(progress[-1][0], "extract")
 
     async def test_official_zip_with_same_name_and_size_but_wrong_sha_is_rejected(self):
         self.download_status = 502
